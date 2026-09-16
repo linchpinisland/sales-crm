@@ -1,0 +1,11 @@
+# clasp (scriptId는 개인 환경별로 다름)
+.clasp.json
+.clasprc.json
+node_modules/
+# 로컬 내보내기·임시
+*.csv
+*.xlsx
+!demo/*.csv
+.DS_Store
+Thumbs.db
+

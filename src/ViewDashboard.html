@@ -1,0 +1,38 @@
+<template id="tpl-dash">
+  <div class="page-title">
+    <span>오늘 챙길 고객 <small data-bind="today"></small></span>
+    <span class="btn-row" style="margin:0">
+      <button class="btn btn-secondary btn-sm" data-action="dry-run">요약 미리보기</button>
+      <button class="btn btn-primary btn-sm" data-action="send-now">카톡으로 지금 보내기</button>
+    </span>
+  </div>
+
+  <div class="grid grid-4" data-slot="kpi"></div>
+
+  <div class="card">
+    <h3>오늘의 알림 <span class="sub">규칙별 · 클릭하면 고객 상세</span></h3>
+    <div data-slot="groups"></div>
+  </div>
+
+  <div class="grid grid-2">
+    <div class="card">
+      <h3>최근 6개월 매출 <span class="sub">구매일 기준</span></h3>
+      <div data-slot="sales-chart"></div>
+    </div>
+    <div class="card">
+      <h3>단계별 고객 <span class="sub" data-bind="customerCount"></span></h3>
+      <div data-slot="stage-chart"></div>
+    </div>
+  </div>
+
+  <div class="grid grid-2">
+    <div class="card">
+      <h3>연락 안 한 지 오래된 순 <span class="sub">상위 5</span></h3>
+      <div class="list" data-slot="stale"></div>
+    </div>
+    <div class="card">
+      <h3>구매의향 "상" 고객 <span class="sub">다음 제안 아이디어</span></h3>
+      <div class="list" data-slot="high"></div>
+    </div>
+  </div>
+</template>

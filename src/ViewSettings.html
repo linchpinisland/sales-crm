@@ -1,0 +1,48 @@
+<template id="tpl-settings">
+  <div class="page-title"><span>설정 <small data-bind="version"></small></span></div>
+
+  <div class="card">
+    <h3>카카오톡 알림</h3>
+    <div class="status-line"><span class="dot" data-role="kakao-dot"></span><span data-bind="kakaoText"></span></div>
+    <p class="hint" style="font-size:12px;color:var(--text-muted);margin-top:6px" data-bind="kakaoDetail"></p>
+    <div class="btn-row">
+      <button class="btn btn-primary" data-action="kakao-connect">카카오 연결</button>
+      <button class="btn btn-secondary" data-action="kakao-test">테스트 발송</button>
+      <button class="btn btn-danger btn-sm" data-action="kakao-disconnect">연결 해제</button>
+    </div>
+    <details style="margin-top:12px;font-size:13px;color:var(--text-muted)">
+      <summary>처음 연결하는 순서</summary>
+      <ol style="padding-left:18px;margin-top:6px;line-height:1.7">
+        <li><a href="https://developers.kakao.com" target="_blank" rel="noopener">developers.kakao.com</a> → 내 애플리케이션 → 앱 추가</li>
+        <li>앱 키의 <b>REST API 키</b>를 아래에 입력</li>
+        <li>카카오 로그인 → 활성화 ON, <b>Redirect URI</b>에 아래 웹앱 URL 등록</li>
+        <li>동의항목 → "카카오톡 메시지 전송" 설정</li>
+        <li>저장 후 [카카오 연결] → 동의 → 테스트 메시지 확인</li>
+      </ol>
+    </details>
+  </div>
+
+  <div class="card">
+    <h3>기본 설정</h3>
+    <form data-form="settings" class="form-grid">
+      <div class="field"><label>사용자 이름</label><input name="사용자 이름"></div>
+      <div class="field"><label>일일 발송 시각 (0~23)</label><input name="일일 발송 시각" inputmode="numeric"></div>
+      <div class="field"><label>요약 최대 건수</label><input name="요약 최대 건수" inputmode="numeric"></div>
+      <div class="field"><label>이메일 폴백</label><select name="이메일 폴백"><option value="Y">Y — 카카오 실패 시 내 Gmail로</option><option value="N">N</option></select></div>
+      <div class="field full"><label>카카오 REST API 키</label><input name="카카오 REST API 키" autocomplete="off"><div class="hint">이 시트를 남과 공유하면 키도 공유됩니다</div></div>
+      <div class="field full"><label>카카오 Client Secret (사용 시에만)</label><input name="카카오 Client Secret" autocomplete="off"></div>
+      <div class="field full"><label>웹앱 URL (/exec)</label><input name="웹앱 URL" placeholder="https://script.google.com/macros/s/.../exec"><div class="hint" data-bind="urlHint"></div></div>
+      <div class="full btn-row"><button type="submit" class="btn btn-primary">설정 저장</button></div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h3>도구</h3>
+    <div class="btn-row" style="margin-top:0">
+      <button class="btn btn-secondary" data-action="dry-run">오늘 요약 미리보기</button>
+      <button class="btn btn-secondary" data-action="send-now">지금 보내기</button>
+      <button class="btn btn-secondary" data-action="export-csv">CSV 내보내기 (Claude Code용)</button>
+    </div>
+    <pre class="preview" data-slot="preview" hidden></pre>
+  </div>
+</template>

@@ -1,0 +1,43 @@
+<template id="tpl-customers">
+  <div class="page-title">
+    <span>고객 <small data-bind="count"></small></span>
+    <a class="btn btn-primary btn-sm" href="#forms/customer">＋ 고객 추가</a>
+  </div>
+  <input class="search" type="search" placeholder="고객명 · 담당자 검색" data-role="search" aria-label="검색">
+  <div class="chips" data-role="stage-chips"></div>
+  <div class="chips" data-role="sort-chips" style="margin-top:0"></div>
+  <div class="card"><div class="list" data-slot="list"></div></div>
+</template>
+
+<template id="tpl-customer-detail">
+  <div class="page-title">
+    <span><a href="#customers" class="btn btn-secondary btn-sm">← 목록</a></span>
+    <span class="btn-row" style="margin:0">
+      <a class="btn btn-secondary btn-sm" data-link="edit">수정</a>
+      <a class="btn btn-secondary btn-sm" data-link="contact">＋ 상담</a>
+      <a class="btn btn-primary btn-sm" data-link="purchase">＋ 구매</a>
+    </span>
+  </div>
+
+  <div class="card">
+    <h3><span data-bind="name"></span><span data-slot="badges"></span></h3>
+    <div data-slot="alerts"></div>
+    <dl class="kv" data-slot="basic"></dl>
+  </div>
+
+  <div class="card">
+    <h3>이 고객을 기억하는 법 <span class="sub">정성 정보</span></h3>
+    <div data-slot="qual"></div>
+  </div>
+
+  <div class="grid grid-2">
+    <div class="card">
+      <h3>상담 이력 <span class="sub" data-bind="contactCount"></span></h3>
+      <ul class="timeline" data-slot="timeline"></ul>
+    </div>
+    <div class="card">
+      <h3>구매 이력 <span class="sub" data-bind="totalSales"></span></h3>
+      <div data-slot="purchases"></div>
+    </div>
+  </div>
+</template>

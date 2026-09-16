@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>고객관리</title>
+<link rel="stylesheet" href="https://unpkg.com/open-props"/>
+<?!= include('Styles') ?>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="#dash"><span class="brand-dot"></span>고객관리</a>
+    <nav class="nav-desktop" aria-label="주 메뉴">
+      <a href="#dash" data-nav="dash">대시보드</a>
+      <a href="#customers" data-nav="customers">고객</a>
+      <a href="#forms" data-nav="forms">기록 입력</a>
+      <a href="#settings" data-nav="settings">설정</a>
+    </nav>
+  </div>
+</header>
+
+<div id="banner" class="banner" hidden></div>
+
+<main id="view" class="view" aria-live="polite">
+  <div class="loading">불러오는 중…</div>
+</main>
+
+<nav class="tabbar" aria-label="하단 메뉴">
+  <a href="#dash" data-nav="dash"><span class="ico">▦</span>대시보드</a>
+  <a href="#customers" data-nav="customers"><span class="ico">☺</span>고객</a>
+  <a href="#forms" data-nav="forms"><span class="ico">＋</span>기록</a>
+  <a href="#settings" data-nav="settings"><span class="ico">⚙</span>설정</a>
+</nav>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<?!= include('ViewDashboard') ?>
+<?!= include('ViewCustomers') ?>
+<?!= include('ViewForms') ?>
+<?!= include('ViewSettings') ?>
+<?!= include('App') ?>
+<script>window.APP_VERSION = '<?= appVersion ?>';</script>
+</body>
+</html>

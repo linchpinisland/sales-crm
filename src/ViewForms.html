@@ -1,0 +1,76 @@
+<template id="tpl-forms">
+  <div class="page-title"><span>기록 입력</span></div>
+  <div class="seg" role="tablist">
+    <button data-seg="customer" role="tab">고객</button>
+    <button data-seg="contact" role="tab">상담</button>
+    <button data-seg="purchase" role="tab">구매</button>
+  </div>
+  <div class="card" data-slot="form"></div>
+</template>
+
+<!-- 고객 추가/수정 -->
+<template id="tpl-form-customer">
+  <form data-form="customer" class="form-grid" autocomplete="off">
+    <input type="hidden" name="고객ID">
+    <div class="field"><label>고객명 *</label><input name="고객명" required placeholder="예: 대성정밀"></div>
+    <div class="field"><label>담당자</label><input name="담당자" placeholder="예: 김재현 과장"></div>
+    <div class="field"><label>연락처</label><input name="연락처" inputmode="tel" placeholder="010-0000-0000"></div>
+    <div class="field"><label>업종</label><select name="업종" data-list="고객.업종"></select></div>
+    <div class="field"><label>단계</label><select name="단계" data-list="고객.단계"></select></div>
+    <div class="field"><label>구매의향</label><select name="구매의향" data-list="고객.구매의향"></select></div>
+    <div class="field"><label>생일 (담당자)</label><input name="생일" type="date"><div class="hint">연도는 아무거나. 매년 D-3에 알림</div></div>
+    <div class="field"><label>기념일 (창립일 등)</label><input name="기념일" type="date"></div>
+    <div class="field"><label>마지막연락일</label><input name="마지막연락일" type="date"><div class="hint">상담·구매를 기록하면 자동 갱신</div></div>
+    <div class="field full"><label>고민 포인트</label><textarea name="고민포인트" placeholder="이 고객이 결정을 미루는 이유, 걱정하는 것"></textarea></div>
+    <div class="field full"><label>취향 / 선호</label><textarea name="취향/선호" placeholder="연락 방식, 좋아하는 것, 싫어하는 것"></textarea></div>
+    <div class="field full"><label>다음 제안 아이디어</label><textarea name="다음제안아이디어" placeholder="다음에 만나면 꺼낼 이야기"></textarea></div>
+    <div class="field full"><label>메모</label><textarea name="메모"></textarea></div>
+    <div class="full btn-row">
+      <button type="submit" class="btn btn-primary">저장</button>
+      <button type="button" class="btn btn-secondary" data-action="reset">초기화</button>
+    </div>
+  </form>
+</template>
+
+<!-- 상담기록 -->
+<template id="tpl-form-contact">
+  <form data-form="contact" class="form-grid" autocomplete="off">
+    <div class="field full"><label>고객 *</label><input name="고객명" list="customer-list" required placeholder="고객명 입력(자동완성)"></div>
+    <div class="field"><label>상담일</label><input name="상담일" type="date"></div>
+    <div class="field"><label>유형</label><select name="유형" data-list="상담기록.유형"></select></div>
+    <div class="field full"><label>내용</label><textarea name="내용" placeholder="무슨 얘기를 했나"></textarea></div>
+    <div class="field"><label>결과</label><select name="결과" data-list="상담기록.결과"></select></div>
+    <div class="field"><label>다음 액션일</label><input name="다음액션일" type="date"></div>
+    <div class="field full"><label>다음 액션</label><input name="다음액션" placeholder="예: 견적서 재발송"></div>
+    <div class="full btn-row">
+      <button type="submit" class="btn btn-primary">저장</button>
+      <button type="button" class="btn btn-secondary" data-action="reset">초기화</button>
+    </div>
+  </form>
+</template>
+
+<!-- 구매기록 -->
+<template id="tpl-form-purchase">
+  <form data-form="purchase" class="form-grid" autocomplete="off">
+    <div class="field full"><label>고객 *</label><input name="고객명" list="customer-list" required placeholder="고객명 입력(자동완성)"></div>
+    <div class="field"><label>구매일</label><input name="구매일" type="date"></div>
+    <div class="field"><label>금액</label><input name="금액" inputmode="numeric" placeholder="4,800,000"></div>
+    <div class="field full"><label>제품 / 서비스</label><input name="제품/서비스" placeholder="예: 산업용 윤활유 20L × 40"></div>
+    <div class="field full"><label>특징 / 사양</label><input name="특징/사양" placeholder="이 고객이 고른 옵션의 특징"></div>
+    <div class="field"><label>재구매 주기(일)</label><input name="재구매주기(일)" inputmode="numeric" placeholder="90"><div class="hint">입력하면 다음구매예정일 자동</div></div>
+    <div class="field"><label>다음 구매 예정일</label><input name="다음구매예정일" type="date"></div>
+    <div class="field"><label>계약 만료 / 납기일</label><input name="계약만료일/납기일" type="date"></div>
+    <div class="field"><label>수금 예정일</label><input name="수금예정일" type="date"></div>
+    <div class="field"><label>수금 상태</label><select name="수금상태" data-list="구매기록.수금상태"></select></div>
+    <div class="field"><label>구매 당시 의향</label><select name="구매당시의향" data-list="구매기록.구매당시의향"></select></div>
+    <div class="field full"><label>고민 포인트</label><textarea name="고민포인트" placeholder="구매 전 무엇을 망설였나"></textarea></div>
+    <div class="field full"><label>다음 제안</label><textarea name="다음제안" placeholder="이 구매를 근거로 다음에 제안할 것"></textarea></div>
+    <div class="field full"><label>메모</label><textarea name="메모"></textarea></div>
+    <div class="full btn-row">
+      <button type="submit" class="btn btn-primary">저장</button>
+      <button type="button" class="btn btn-secondary" data-action="reset">초기화</button>
+    </div>
+  </form>
+</template>
+
+<datalist id="customer-list"></datalist>

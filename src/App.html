@@ -1,0 +1,331 @@
+<script>
+(function () {
+  'use strict';
+
+  // ── 서버 호출 래퍼: Apps Script 안에서는 google.script.run, 로컬 미리보기에서는 fetch ──
+  var hasGas = typeof google !== 'undefined' && google.script && google.script.run;
+  function api(name) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    if (hasGas) {
+      return new Promise(function (resolve, reject) {
+        var runner = google.script.run
+          .withSuccessHandler(resolve)
+          .withFailureHandler(function (e) { reject(new Error((e && e.message) || String(e))); });
+        runner[name].apply(runner, args);
+      });
+    }
+    return fetch('/api/' + name, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(args) })
+      .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || r.statusText); return j; }); });
+  }
+
+  // ── 유틸 ──
+  var $ = function (sel, root) { return (root || document).querySelector(sel); };
+  var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
+  function esc(s) { return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function won(n) { n = Number(n) || 0; return n.toLocaleString('ko-KR') + '원'; }
+  function wonShort(n) { n = Number(n) || 0; if (n >= 100000000) return (n / 100000000).toFixed(1).replace(/\.0$/, '') + '억'; if (n >= 10000) return Math.round(n / 10000).toLocaleString('ko-KR') + '만'; return n.toLocaleString('ko-KR'); }
+  function todayStr() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  function daysAgo(days) { if (days === null || days === undefined) return '기록 없음'; if (days === 0) return '오늘'; return days + '일 전'; }
+  function tpl(id) { var t = document.getElementById(id); return document.importNode(t.content, true); }
+  function stageBadge(s) { return s ? '<span class="badge stage-' + esc(s) + '">' + esc(s) + '</span>' : ''; }
+  function intentBadge(s) { return s === '상' ? '<span class="badge intent-상">의향 상</span>' : ''; }
+
+  var toastTimer;
+  function toast(msg, isError) {
+    var el = $('#toast');
+    el.textContent = msg; el.className = 'toast' + (isError ? ' error' : ''); el.hidden = false;
+    clearTimeout(toastTimer); toastTimer = setTimeout(function () { el.hidden = true; }, isError ? 5000 : 2600);
+  }
+  function fail(e) { console.error(e); toast((e && e.message) || String(e), true); }
+  function busy(btn, on) { if (!btn) return; btn.disabled = on; if (on) { btn.dataset.label = btn.textContent; btn.textContent = '처리 중…'; } else if (btn.dataset.label) { btn.textContent = btn.dataset.label; } }
+
+  var cache = { lists: null, customers: null };
+  function getLists() { return cache.lists ? Promise.resolve(cache.lists) : api('api_getLists').then(function (l) { cache.lists = l; return l; }); }
+  function getCustomers(force) { return (!force && cache.customers) ? Promise.resolve(cache.customers) : api('api_getCustomers').then(function (l) { cache.customers = l; return l; }); }
+  function invalidate() { cache.customers = null; }
+
+  // ── 라우터 ──
+  function parseHash() {
+    var h = (location.hash || '#dash').slice(1);
+    var q = {}; var qi = h.indexOf('?');
+    if (qi >= 0) { h.slice(qi + 1).split('&').forEach(function (p) { var kv = p.split('='); q[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1] || ''); }); h = h.slice(0, qi); }
+    var parts = h.split('/');
+    return { page: parts[0] || 'dash', arg: parts[1] || '', q: q };
+  }
+  function route() {
+    var r = parseHash();
+    var nav = r.page === 'customer' ? 'customers' : r.page;
+    $$('[data-nav]').forEach(function (a) { a.classList.toggle('active', a.dataset.nav === nav); });
+    var view = $('#view');
+    view.innerHTML = '<div class="loading">불러오는 중…</div>';
+    window.scrollTo(0, 0);
+    var p;
+    if (r.page === 'dash') p = renderDash(view);
+    else if (r.page === 'customers') p = renderCustomers(view);
+    else if (r.page === 'customer') p = renderCustomerDetail(view, r.arg);
+    else if (r.page === 'forms') p = renderForms(view, r.arg || 'customer', r.q);
+    else if (r.page === 'settings') p = renderSettings(view);
+    else { location.hash = '#dash'; return; }
+    p.catch(function (e) { view.innerHTML = '<div class="card"><b>오류</b><p style="font-size:13px;margin-top:6px">' + esc(e.message) + '</p></div>'; fail(e); });
+  }
+  window.addEventListener('hashchange', route);
+
+  // ── 배너 ──
+  function showBanner(model) {
+    var b = $('#banner');
+    if (model.kakao && model.kakao.status !== 'CONNECTED') {
+      b.className = 'banner warn'; b.hidden = false;
+      b.innerHTML = '<span>카카오톡이 아직 연결되지 않았습니다' + (model.kakao.status === 'DISCONNECTED' ? ' (토큰 만료 — 다시 연결 필요)' : '') + '. 알림은 이메일로 갑니다.</span><a class="btn btn-sm btn-primary" href="#settings">연결하기</a>';
+    } else if (model.demoLoaded) {
+      b.className = 'banner info'; b.hidden = false;
+      b.innerHTML = '<span>데모 데이터가 들어 있습니다. 실제 사용 전 시트 메뉴 [고객관리] → [데모 데이터 지우기]</span>';
+    } else { b.hidden = true; }
+  }
+
+  // ── 대시보드 ──
+  function renderDash(view) {
+    return api('api_getDashboard').then(function (m) {
+      var frag = tpl('tpl-dash');
+      $('[data-bind=today]', frag).textContent = m.today;
+      $('[data-bind=customerCount]', frag).textContent = '활성 ' + m.kpi.customerCount + '곳';
+      var k = m.kpi;
+      $('[data-slot=kpi]', frag).innerHTML =
+        '<div class="card kpi ' + (k.todayCount ? 'warn' : '') + '"><div class="label">오늘 챙길 고객</div><div class="value">' + k.todayCount + '<small>곳 · 알림 ' + k.alertCount + '건</small></div></div>' +
+        '<div class="card kpi accent"><div class="label">이번 달 매출</div><div class="value">' + wonShort(k.monthSales) + '<small>원 · ' + k.monthCount + '건</small></div></div>' +
+        '<div class="card kpi ' + (k.receivable ? 'warn' : '') + '"><div class="label">미수금 합계</div><div class="value">' + wonShort(k.receivable) + '<small>원</small></div></div>' +
+        '<div class="card kpi"><div class="label">구매의향 "상"</div><div class="value">' + k.highIntentCount + '<small>곳</small></div></div>';
+
+      var groups = $('[data-slot=groups]', frag);
+      if (!m.groups.length) groups.innerHTML = '<div class="empty">오늘은 걸린 알림이 없습니다 🎉</div>';
+      else groups.innerHTML = m.groups.map(function (g, i) {
+        return '<details class="acc" ' + (i < 3 ? 'open' : '') + '><summary><span>' + esc(g.ruleName) + '</span><span class="count">' + g.items.length + '</span></summary>' +
+          g.items.map(function (c) {
+            return '<div class="item"><span class="msg"><a class="who" href="#customer/' + esc(c.customerId) + '">' + esc(c.customerName) + '</a> ' + esc(c.message.replace(c.customerName, '').trim()) + '</span>' +
+              '<a class="btn btn-secondary btn-sm" href="#forms/contact?customer=' + encodeURIComponent(c.customerName) + '">기록</a></div>';
+          }).join('') + '</details>';
+      }).join('');
+
+      $('[data-slot=sales-chart]', frag).innerHTML = barChart(m.salesByMonth);
+      $('[data-slot=stage-chart]', frag).innerHTML = donutChart(m.stageCounts);
+
+      var stale = $('[data-slot=stale]', frag);
+      stale.innerHTML = m.stale.length ? m.stale.map(function (c) {
+        return '<a class="row" href="#customer/' + esc(c.customerId) + '"><div class="main"><div class="name">' + esc(c.customerName) + ' ' + stageBadge(c.stage) + '</div><div class="meta">마지막 연락 ' + esc(c.lastContact || '없음') + '</div></div><div class="side"><b class="' + (c.days >= 21 ? 'hot' : '') + '">' + daysAgo(c.days) + '</b></div></a>';
+      }).join('') : '<div class="empty">고객이 없습니다</div>';
+
+      var high = $('[data-slot=high]', frag);
+      high.innerHTML = m.highIntent.length ? m.highIntent.map(function (c) {
+        return '<a class="row" href="#customer/' + esc(c.customerId) + '"><div class="main"><div class="name">' + esc(c.customerName) + ' ' + stageBadge(c.stage) + '</div><div class="meta">' + esc(c.nextIdea || '다음 제안 아이디어를 적어두세요') + '</div></div><div class="side">' + daysAgo(c.days) + '</div></a>';
+      }).join('') : '<div class="empty">구매의향 "상" 고객이 없습니다</div>';
+
+      $('[data-action=send-now]', frag).addEventListener('click', function (e) { sendNow(e.target); });
+      $('[data-action=dry-run]', frag).addEventListener('click', function () { location.hash = '#settings?preview=1'; });
+
+      view.innerHTML = ''; view.appendChild(frag);
+      showBanner(m);
+    });
+  }
+
+  function sendNow(btn) {
+    if (!confirm('오늘 알림 요약을 지금 보낼까요? (카카오 미연결이면 이메일)')) return;
+    busy(btn, true);
+    api('api_runDailyNow').then(function (r) { toast('발송 완료: ' + r.count + '건 → ' + (r.channel === 'kakao' ? '카카오톡' : r.channel === 'email' ? '이메일' : r.channel)); })
+      .catch(fail).finally(function () { busy(btn, false); });
+  }
+
+  // ── SVG 차트 (라이브러리 없음) ──
+  function barChart(series) {
+    var W = 320, H = 150, padL = 8, padB = 24, padT = 18;
+    var max = Math.max.apply(null, series.map(function (s) { return s.total; }).concat([1]));
+    var bw = (W - padL * 2) / series.length;
+    var bars = series.map(function (s, i) {
+      var h = Math.round((H - padB - padT) * s.total / max);
+      var x = padL + i * bw + bw * 0.18, y = H - padB - h;
+      return '<rect x="' + x + '" y="' + y + '" width="' + (bw * 0.64) + '" height="' + h + '" rx="4" fill="var(--accent)" opacity="' + (i === series.length - 1 ? 1 : 0.55) + '"><title>' + esc(s.key) + ' ' + won(s.total) + ' (' + s.count + '건)</title></rect>' +
+        (s.total ? '<text x="' + (x + bw * 0.32) + '" y="' + (y - 4) + '" font-size="9" text-anchor="middle" fill="var(--text-muted)">' + wonShort(s.total) + '</text>' : '') +
+        '<text x="' + (x + bw * 0.32) + '" y="' + (H - 8) + '" font-size="10" text-anchor="middle" fill="var(--text-muted)">' + esc(s.label) + '</text>';
+    }).join('');
+    return '<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="최근 6개월 매출"><line x1="' + padL + '" x2="' + (W - padL) + '" y1="' + (H - padB) + '" y2="' + (H - padB) + '" stroke="var(--card-border)"/>' + bars + '</svg>';
+  }
+  function donutChart(counts) {
+    var colors = ['var(--gray-5)', 'var(--blue-6)', 'var(--violet-6)', 'var(--green-6)', 'var(--yellow-6)', 'var(--red-6)'];
+    var total = counts.reduce(function (s, c) { return s + c.count; }, 0) || 1;
+    var cx = 70, cy = 70, r = 52, sw = 18, C = 2 * Math.PI * r, off = 0;
+    var segs = counts.map(function (c, i) {
+      var len = C * c.count / total;
+      var s = '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' + colors[i % colors.length] + '" stroke-width="' + sw + '" stroke-dasharray="' + len + ' ' + (C - len) + '" stroke-dashoffset="' + (-off) + '" transform="rotate(-90 ' + cx + ' ' + cy + ')"><title>' + esc(c.stage) + ' ' + c.count + '</title></circle>';
+      off += len; return s;
+    }).join('');
+    var legend = counts.map(function (c, i) { return '<span><i style="background:' + colors[i % colors.length] + '"></i>' + esc(c.stage) + ' ' + c.count + '</span>'; }).join('');
+    return '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><svg width="140" height="140" viewBox="0 0 140 140" role="img" aria-label="단계별 고객 수">' + segs +
+      '<text x="70" y="66" text-anchor="middle" font-size="22" font-weight="700" fill="var(--text)">' + (total === 1 && !counts.some(function (c) { return c.count; }) ? 0 : total) + '</text><text x="70" y="84" text-anchor="middle" font-size="10" fill="var(--text-muted)">거래처</text></svg><div class="legend" style="flex-direction:column;gap:4px">' + legend + '</div></div>';
+  }
+
+  // ── 고객 목록 ──
+  var custState = { q: '', stage: '전체', sort: 'stale' };
+  function renderCustomers(view) {
+    return Promise.all([getCustomers(true), getLists()]).then(function (res) {
+      var list = res[0], lists = res[1];
+      var frag = tpl('tpl-customers');
+      var stages = ['전체', '알림'].concat(lists['고객']['단계']);
+      var chips = $('[data-role=stage-chips]', frag);
+      chips.innerHTML = stages.map(function (s) { return '<button class="chip ' + (custState.stage === s ? 'active' : '') + '" data-stage="' + esc(s) + '">' + esc(s) + '</button>'; }).join('');
+      var sorts = [['stale', '오래된 순'], ['recent', '최근 연락순'], ['name', '이름순']];
+      var sortChips = $('[data-role=sort-chips]', frag);
+      sortChips.innerHTML = sorts.map(function (s) { return '<button class="chip ' + (custState.sort === s[0] ? 'active' : '') + '" data-sort="' + s[0] + '">' + s[1] + '</button>'; }).join('');
+      var search = $('[data-role=search]', frag); search.value = custState.q;
+      var listEl = $('[data-slot=list]', frag);
+      var countEl = $('[data-bind=count]', frag);
+
+      function draw() {
+        var q = custState.q.trim().toLowerCase();
+        var rows = list.filter(function (c) {
+          if (q && (String(c.name) + ' ' + String(c.person)).toLowerCase().indexOf(q) < 0) return false;
+          if (custState.stage === '알림') return c.alerts.length > 0;
+          if (custState.stage !== '전체') return c.stage === custState.stage;
+          return true;
+        });
+        rows.sort(function (a, b) {
+          if (custState.sort === 'name') return String(a.name).localeCompare(String(b.name), 'ko');
+          var da = a.days === null ? -1 : a.days, db = b.days === null ? -1 : b.days;
+          return custState.sort === 'stale' ? db - da : da - db;
+        });
+        countEl.textContent = rows.length + '곳';
+        listEl.innerHTML = rows.length ? rows.map(function (c) {
+          return '<a class="row" href="#customer/' + esc(c.id) + '"><div class="main"><div class="name">' + esc(c.name) + stageBadge(c.stage) + intentBadge(c.intent) +
+            (c.alerts.length ? '<span class="badge alert">알림 ' + c.alerts.length + '</span>' : '') + '</div><div class="meta">' + esc(c.person || '담당자 미입력') + ' · ' + esc(c.industry || '') + (c.alerts.length ? ' · ' + esc(c.alerts.join(', ')) : '') + '</div></div>' +
+            '<div class="side"><b class="' + (c.days >= 21 ? 'hot' : '') + '">' + daysAgo(c.days) + '</b>' + esc(c.lastContact) + '</div></a>';
+        }).join('') : '<div class="empty">조건에 맞는 고객이 없습니다</div>';
+      }
+      search.addEventListener('input', function () { custState.q = search.value; draw(); });
+      chips.addEventListener('click', function (e) { var b = e.target.closest('[data-stage]'); if (!b) return; custState.stage = b.dataset.stage; $$('.chip', chips).forEach(function (x) { x.classList.toggle('active', x === b); }); draw(); });
+      sortChips.addEventListener('click', function (e) { var b = e.target.closest('[data-sort]'); if (!b) return; custState.sort = b.dataset.sort; $$('.chip', sortChips).forEach(function (x) { x.classList.toggle('active', x === b); }); draw(); });
+      draw();
+      view.innerHTML = ''; view.appendChild(frag);
+    });
+  }
+
+  // ── 고객 상세 ──
+  function renderCustomerDetail(view, id) {
+    return api('api_getCustomer', id).then(function (d) {
+      var c = d.customer;
+      var frag = tpl('tpl-customer-detail');
+      $('[data-bind=name]', frag).textContent = c['고객명'];
+      $('[data-slot=badges]', frag).innerHTML = ' ' + stageBadge(c['단계']) + ' ' + intentBadge(c['구매의향']);
+      $('[data-link=edit]', frag).href = '#forms/customer?id=' + encodeURIComponent(c['고객ID']);
+      $('[data-link=contact]', frag).href = '#forms/contact?customer=' + encodeURIComponent(c['고객명']);
+      $('[data-link=purchase]', frag).href = '#forms/purchase?customer=' + encodeURIComponent(c['고객명']);
+      $('[data-slot=alerts]', frag).innerHTML = d.alerts.length ? '<div style="margin-bottom:10px">' + d.alerts.map(function (a) { return '<div class="quote" style="border-color:var(--red);margin-top:6px"><span class="q">' + esc(a.ruleName) + '</span><br>' + esc(a.message) + '</div>'; }).join('') + '</div>' : '';
+      var kv = [['담당자', c['담당자']], ['연락처', c['연락처'] ? '<a href="tel:' + esc(c['연락처']) + '">' + esc(c['연락처']) + '</a>' : ''], ['업종', esc(c['업종'])], ['마지막 연락', esc(c['마지막연락일']) + (d.days !== null ? ' <span class="badge ' + (d.days >= 21 ? 'alert' : '') + '">' + daysAgo(d.days) + '</span>' : '')],
+        ['생일', esc(c['생일'] ? c['생일'].slice(5).replace('-', '/') : '')], ['기념일', esc(c['기념일'] ? c['기념일'].slice(5).replace('-', '/') : '')], ['단계 변경', esc(c['단계변경일'])], ['등록일', esc(c['등록일'])]];
+      $('[data-slot=basic]', frag).innerHTML = kv.filter(function (x) { return x[1]; }).map(function (x) { return '<dt>' + x[0] + '</dt><dd>' + (x[0] === '담당자' ? esc(x[1]) : x[1]) + '</dd>'; }).join('');
+      var qual = [['고민 포인트', c['고민포인트']], ['취향 / 선호', c['취향/선호']], ['다음 제안 아이디어', c['다음제안아이디어']], ['메모', c['메모']]].filter(function (x) { return x[1]; });
+      $('[data-slot=qual]', frag).innerHTML = qual.length ? qual.map(function (x) { return '<div class="quote"><span class="q">' + x[0] + '</span><br>' + esc(x[1]) + '</div>'; }).join('') : '<div class="empty">아직 적어둔 게 없습니다. [수정]에서 고민·취향·다음 제안을 남겨두세요.</div>';
+      $('[data-bind=contactCount]', frag).textContent = d.contacts.length + '건';
+      $('[data-bind=totalSales]', frag).textContent = '누적 ' + won(d.totalSales);
+      var tl = $('[data-slot=timeline]', frag);
+      tl.innerHTML = d.contacts.length ? d.contacts.slice().reverse().map(function (l) {
+        return '<li><div class="date">' + esc(l['상담일']) + ' · ' + esc(l['유형']) + (l['결과'] ? ' · ' + esc(l['결과']) : '') + '</div><div class="body">' + esc(l['내용']) + '</div>' + (l['다음액션'] ? '<div class="next">→ ' + esc(l['다음액션']) + (l['다음액션일'] ? ' (' + esc(l['다음액션일']) + ')' : '') + '</div>' : '') + '</li>';
+      }).join('') : '<div class="empty">상담 기록이 없습니다</div>';
+      var pu = $('[data-slot=purchases]', frag);
+      pu.innerHTML = d.purchases.length ? '<table class="tbl"><thead><tr><th>구매일</th><th>제품/서비스</th><th style="text-align:right">금액</th><th>수금</th></tr></thead><tbody>' + d.purchases.slice().reverse().map(function (p) {
+        return '<tr><td>' + esc(p['구매일']) + '</td><td>' + esc(p['제품/서비스']) + (p['특징/사양'] ? '<div style="font-size:11px;color:var(--text-muted)">' + esc(p['특징/사양']) + '</div>' : '') + (p['다음제안'] ? '<div style="font-size:11px;color:var(--orange-8)">다음: ' + esc(p['다음제안']) + '</div>' : '') + '</td><td class="num">' + won(p['금액']) + '</td><td>' + (p['수금상태'] && p['수금상태'] !== '완료' ? '<span class="badge alert">' + esc(p['수금상태']) + '</span>' : esc(p['수금상태'] || '')) + '</td></tr>';
+      }).join('') + '</tbody></table>' : '<div class="empty">구매 기록이 없습니다</div>';
+      view.innerHTML = ''; view.appendChild(frag);
+    });
+  }
+
+  // ── 기록 입력 ──
+  function renderForms(view, seg, q) {
+    return Promise.all([getLists(), getCustomers()]).then(function (res) {
+      var lists = res[0], customers = res[1];
+      var frag = tpl('tpl-forms');
+      $$('[data-seg]', frag).forEach(function (b) { b.classList.toggle('active', b.dataset.seg === seg); b.addEventListener('click', function () { location.hash = '#forms/' + b.dataset.seg + (q.customer ? '?customer=' + encodeURIComponent(q.customer) : ''); }); });
+      var slot = $('[data-slot=form]', frag);
+      slot.appendChild(tpl('tpl-form-' + seg));
+      var form = $('form', slot);
+      // 드롭다운 채우기
+      $$('select[data-list]', form).forEach(function (sel) {
+        var key = sel.dataset.list.split('.');
+        var opts = (lists[key[0]] || {})[key[1]] || [];
+        sel.innerHTML = '<option value="">선택</option>' + opts.map(function (o) { return '<option>' + esc(o) + '</option>'; }).join('');
+      });
+      $('#customer-list').innerHTML = customers.map(function (c) { return '<option value="' + esc(c.name) + '">' + esc(c.person || '') + '</option>'; }).join('');
+      // 기본값
+      var dateDefault = { contact: '상담일', purchase: '구매일' }[seg];
+      if (dateDefault && form.elements[dateDefault]) form.elements[dateDefault].value = todayStr();
+      if (q.customer && form.elements['고객명']) form.elements['고객명'].value = q.customer;
+      if (seg === 'customer') {
+        form.elements['단계'].value = '잠재'; form.elements['구매의향'].value = '중';
+        if (q.id) api('api_getCustomer', q.id).then(function (d) { fillForm(form, d.customer); $('button[type=submit]', form).textContent = '수정 저장'; }).catch(fail);
+      }
+      if (seg === 'purchase') form.elements['수금상태'].value = '미수';
+      if (seg === 'contact') form.elements['결과'].value = '진행';
+      $('[data-action=reset]', form).addEventListener('click', function () { form.reset(); if (dateDefault) form.elements[dateDefault].value = todayStr(); });
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var obj = {};
+        $$('[name]', form).forEach(function (el) { obj[el.name] = el.value; });
+        var btn = $('button[type=submit]', form);
+        busy(btn, true);
+        var call = seg === 'customer' ? api('api_saveCustomer', obj) : seg === 'contact' ? api('api_addContact', obj) : api('api_addPurchase', obj);
+        call.then(function (r) {
+          invalidate();
+          var imm = r.immediate && r.immediate.length ? ' · 즉시 알림 ' + r.immediate.length + '건 발송' : '';
+          toast('저장했습니다' + imm);
+          var id = (r.customer && r.customer['고객ID']) || (r.contact && r.contact['고객ID']) || (r.purchase && r.purchase['고객ID']);
+          location.hash = id ? '#customer/' + id : '#customers';
+        }).catch(fail).finally(function () { busy(btn, false); });
+      });
+      view.innerHTML = ''; view.appendChild(frag);
+    });
+  }
+  function fillForm(form, obj) {
+    Object.keys(obj).forEach(function (k) { var el = form.elements[k]; if (el && typeof el.value !== 'undefined') el.value = obj[k] === null || obj[k] === undefined ? '' : obj[k]; });
+  }
+
+  // ── 설정 ──
+  function renderSettings(view) {
+    return api('api_getSettings').then(function (s) {
+      var frag = tpl('tpl-settings');
+      $('[data-bind=version]', frag).textContent = 'v' + (s.version || window.APP_VERSION || '');
+      var form = $('form[data-form=settings]', frag);
+      Object.keys(s.settings).forEach(function (k) { var el = form.elements[k]; if (el) el.value = s.settings[k].value; });
+      if (s.scriptUrl && !s.settings['웹앱 URL'].value) { form.elements['웹앱 URL'].value = s.scriptUrl; }
+      $('[data-bind=urlHint]', frag).textContent = s.scriptUrl ? '현재 실행 중인 URL: ' + s.scriptUrl : '배포 후 웹 앱 URL을 붙여넣으세요';
+      paintKakao(frag, s.kakao);
+
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var map = {}; $$('[name]', form).forEach(function (el) { map[el.name] = el.value.trim(); });
+        var btn = $('button[type=submit]', form); busy(btn, true);
+        api('api_saveSettings', map).then(function (ns) { toast('설정을 저장했습니다'); paintKakao(document, ns.kakao); }).catch(fail).finally(function () { busy(btn, false); });
+      });
+      $('[data-action=kakao-connect]', frag).addEventListener('click', function (e) {
+        var w = window.open('', '_blank');
+        api('api_getKakaoAuthUrl').then(function (url) { if (w) w.location = url; else window.open(url, '_blank'); toast('카카오 동의 창에서 [동의하고 계속하기]를 눌러주세요'); })
+          .catch(function (err) { if (w) w.close(); fail(err); });
+      });
+      $('[data-action=kakao-test]', frag).addEventListener('click', function (e) { busy(e.target, true); api('api_sendKakaoTest').then(function () { toast('테스트 메시지를 보냈습니다. "나와의 채팅"을 확인하세요'); }).catch(fail).finally(function () { busy(e.target, false); }); });
+      $('[data-action=kakao-disconnect]', frag).addEventListener('click', function () { if (!confirm('카카오 연결을 해제할까요?')) return; api('api_kakaoDisconnect').then(function (k) { toast('해제했습니다'); paintKakao(document, k); }).catch(fail); });
+      var pre = $('[data-slot=preview]', frag);
+      function dryRun(btn) { busy(btn, true); api('api_dryRun').then(function (r) { pre.hidden = false; pre.textContent = '후보 ' + r.candidates.length + '건\n\n' + r.chunks.join('\n────────\n'); }).catch(fail).finally(function () { busy(btn, false); }); }
+      $('[data-action=dry-run]', frag).addEventListener('click', function (e) { dryRun(e.target); });
+      $('[data-action=send-now]', frag).addEventListener('click', function (e) { sendNow(e.target); });
+      $('[data-action=export-csv]', frag).addEventListener('click', function (e) { busy(e.target, true); api('api_exportCsv').then(function (r) { pre.hidden = false; pre.innerHTML = 'Drive 폴더에 CSV 3개를 만들었습니다: <a href="' + esc(r.url) + '" target="_blank" rel="noopener">' + esc(r.name) + ' ↗</a>\n폴더를 내려받아 Claude Code 작업 폴더에 넣고 "이번 주 챙길 고객 뽑아줘"라고 하세요.'; toast('CSV 내보내기 완료'); }).catch(fail).finally(function () { busy(e.target, false); }); });
+      view.innerHTML = ''; view.appendChild(frag);
+      if (parseHash().q.preview) dryRun($('[data-action=dry-run]', view));
+    });
+  }
+  function paintKakao(root, k) {
+    var dot = $('[data-role=kakao-dot]', root), txt = $('[data-bind=kakaoText]', root), det = $('[data-bind=kakaoDetail]', root);
+    if (!dot) return;
+    var on = k.status === 'CONNECTED';
+    dot.className = 'dot ' + (on ? 'on' : (k.status === 'DISCONNECTED' ? 'off' : ''));
+    txt.textContent = on ? '연결됨' : (k.status === 'DISCONNECTED' ? '연결 끊김 — 다시 연결 필요' : '미연결');
+    det.textContent = on ? ('연결일 ' + (k.connectedAt || '').slice(0, 10) + (k.refreshExpiresAt ? ' · 토큰 유효 ~' + k.refreshExpiresAt.slice(0, 10) + ' (자동 갱신)' : '')) : (k.lastError ? '오류: ' + k.lastError : (k.restKeySet ? 'REST API 키 입력됨. [카카오 연결]을 누르세요.' : '아래에서 REST API 키와 웹앱 URL을 먼저 저장하세요.'));
+  }
+
+  route();
+})();
+</script>
