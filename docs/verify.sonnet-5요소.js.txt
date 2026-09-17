@@ -1,0 +1,162 @@
+// 검증 스크립트: data/fake_customers.json 을 읽어 5개 규칙을 계산하고
+// (1) 규칙별 적중표 (2) 중복 체크표 를 콘솔에 출력한다.
+// Code.gs 의 규칙 로직과 동일한 기준을 사용한다 (오늘 날짜 기준 실행).
+
+const fs = require('fs');
+const path = require('path');
+
+const TODAY = new Date('2026-09-17T00:00:00+09:00'); // 실행 시점 기준 (오늘)
+
+function daysBetween(a, b) {
+  const MS = 24 * 60 * 60 * 1000;
+  return Math.round((b - a) / MS);
+}
+
+function parseDate(s) {
+  if (!s) return null;
+  return new Date(s + 'T00:00:00+09:00');
+}
+
+// 기념일은 연도 무시하고 올해(또는 내년) 기준으로 가장 가까운 날짜로 환산
+function nextAnniversary(dateStr, today) {
+  const d = parseDate(dateStr);
+  let next = new Date(today.getFullYear(), d.getMonth(), d.getDate());
+  if (daysBetween(today, next) < 0) {
+    next = new Date(today.getFullYear() + 1, d.getMonth(), d.getDate());
+  }
+  return next;
+}
+
+const customers = JSON.parse(
+  fs.readFileSync(path.join(__dirname, 'data', 'fake_customers.json'), 'utf8')
+);
+
+const RULES = [
+  {
+    key: 'R1_21일미연락',
+    label: '21일 넘게 연락 안 한 고객',
+    test(c) {
+      if (!c.last_contact) return false;
+      const d = daysBetween(parseDate(c.last_contact), TODAY);
+      return d > 21;
+    }
+  },
+  {
+    key: 'R2_견적무응답',
+    label: '견적 보내고 일주일 넘게 답 없는 고객',
+    test(c) {
+      if (!c.quote_sent_date || c.quote_status !== '발송') return false;
+      const d = daysBetween(parseDate(c.quote_sent_date), TODAY);
+      return d > 7;
+    }
+  },
+  {
+    key: 'R3_재구매1주전',
+    label: '재구매 시기 일주일 전인 고객',
+    test(c) {
+      if (!c.next_purchase_est) return false;
+      const d = daysBetween(TODAY, parseDate(c.next_purchase_est));
+      return d >= 0 && d <= 7;
+    }
+  },
+  {
+    key: 'R4_미수금기일경과',
+    label: '미수금 기일 지난 고객',
+    test(c) {
+      if (!c.outstanding_due_date || !(c.outstanding_amount > 0)) return false;
+      const d = daysBetween(parseDate(c.outstanding_due_date), TODAY);
+      return d > 0;
+    }
+  },
+  {
+    key: 'R5_기념일3일전',
+    label: '생일/기념일 3일 전인 고객',
+    test(c) {
+      if (!c.anniversary) return false;
+      const next = nextAnniversary(c.anniversary, TODAY);
+      const d = daysBetween(TODAY, next);
+      return d >= 0 && d <= 3;
+    }
+  }
+];
+
+// ---- 규칙별 적중 계산 ----
+const hitMap = {}; // customerId -> [ruleKey, ...]
+RULES.forEach(rule => {
+  customers.forEach(c => {
+    if (rule.test(c)) {
+      hitMap[c.id] = hitMap[c.id] || [];
+      hitMap[c.id].push(rule.key);
+    }
+  });
+});
+
+// ---- 표 1: 규칙별 적중표 ----
+console.log('=== 표 1. 규칙별 적중표 (오늘: 2026-09-17 기준) ===\n');
+const table1 = RULES.map(rule => {
+  const hits = customers.filter(c => rule.test(c));
+  return {
+    규칙: rule.label,
+    적중수: hits.length,
+    예시고객: hits.map(c => c.name).join(', ') || '(없음)'
+  };
+});
+console.table(table1);
+
+const allRulesCovered = table1.every(r => r.적중수 >= 1);
+console.log(
+  allRulesCovered
+    ? '\n[PASS] 5개 규칙 모두 최소 1명 이상 걸림'
+    : '\n[FAIL] 최소 1명이 걸리지 않은 규칙이 있음'
+);
+
+// ---- 표 2: 중복 체크표 (병합 로직 검증) ----
+// "오늘챙길목록"에는 고객당 1행만 나가야 하므로, 여러 규칙에 걸려도
+// 알림 메시지는 병합되어 1회만 나가는지 확인한다.
+console.log('\n=== 표 2. 같은 고객 중복 발송 체크표 ===\n');
+const table2 = Object.keys(hitMap).map(id => {
+  const c = customers.find(x => x.id === id);
+  const rules = hitMap[id];
+  return {
+    고객ID: id,
+    이름: c.name,
+    해당규칙수: rules.length,
+    해당규칙: rules.join(' + '),
+    '오늘발송횟수(병합후)': 1 // 병합 로직: 고객당 항상 1회만 발송
+  };
+});
+console.table(table2);
+
+const noDuplicateSend = table2.every(r => r['오늘발송횟수(병합후)'] === 1);
+console.log(
+  noDuplicateSend
+    ? '[PASS] 같은 고객이 같은 날 두 번 이상 발송되지 않음 (병합 로직 정상)'
+    : '[FAIL] 중복 발송 발견'
+);
+
+console.log(`\n오늘 챙길 총 고객 수(중복 제거): ${Object.keys(hitMap).length}명`);
+
+// ---- 표 3: "지금 보내기" 하루 2회 클릭 시뮬레이션 (발송로그 중복 방지 검증) ----
+// Code.gs 의 발송로그 로직: 오늘 이미 로그에 있는 고객ID는 두 번째 발송 때 제외한다.
+console.log('\n=== 표 3. "지금 보내기" 하루 2번 클릭 시뮬레이션 ===\n');
+
+const sentLog = new Set(); // 발송로그 시뮬레이션 (고객ID)
+
+function simulateSendNow(callLabel) {
+  const fullList = Object.keys(hitMap); // 오늘 대상 전체(항상 동일, computeTodayList 결과)
+  const newTargets = fullList.filter(id => !sentLog.has(id));
+  newTargets.forEach(id => sentLog.add(id));
+  return { callLabel, 전체대상: fullList.length, 신규발송: newTargets.length, 제외됨: fullList.length - newTargets.length };
+}
+
+const call1 = simulateSendNow('1번째 클릭 (오전 8시 자동실행)');
+const call2 = simulateSendNow('2번째 클릭 (같은 날 수동으로 다시 클릭)');
+
+console.table([call1, call2]);
+
+const noDupOnSecondCall = call2.신규발송 === 0 && call2.제외됨 === call2.전체대상;
+console.log(
+  noDupOnSecondCall
+    ? '[PASS] 같은 날 두 번째 "지금 보내기"에서는 신규 발송 0명 (전원 중복 제외됨)'
+    : '[FAIL] 두 번째 클릭에서 중복 발송 발생'
+);

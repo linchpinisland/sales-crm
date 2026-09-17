@@ -1,0 +1,511 @@
+/**
+ * 자동차 영업 고객관리 시트 - Apps Script
+ * 시트 탭 구성: 고객명단 / 상담기록 / 구매기록 / 오늘챙길목록 / 발송로그 / 설정
+ *
+ * 메뉴: 고객관리 ▸ 초기 설정 / 가짜 데이터 넣기 / 카카오 연결하기 / 미리보기 / 지금 보내기
+ */
+
+const SHEET_CUSTOMERS = '고객명단';
+const SHEET_TODAY = '오늘챙길목록';
+const SHEET_SETTINGS = '설정';
+const SHEET_LOG = '발송로그';
+
+// ── 메뉴 ──────────────────────────────────────────
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('고객관리')
+    .addItem('초기 설정', 'setupSheets')
+    .addItem('가짜 데이터 넣기', 'seedFakeData')
+    .addSeparator()
+    .addItem('카카오 연결하기 (최초 1회 로그인)', 'showKakaoLoginDialog')
+    .addSeparator()
+    .addItem('미리보기 (오늘챙길목록 갱신만)', 'previewToday')
+    .addItem('지금 보내기 (카톡 나에게 → 실패 시 이메일)', 'sendNow')
+    .addToUi();
+}
+
+// ── 초기 설정: 탭/헤더/트리거 생성 ──────────────────
+function setupSheets() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  const sheets = {
+    '고객명단': ['고객ID', '이름', '연락처', '기념일', '기념일종류', '최근상담일'],
+    '상담기록': ['고객ID', '날짜', '내용', '견적발송일', '견적상태'],
+    '구매기록': ['고객ID', '구매일', '차종', '재구매예상일', '미수금액', '미수금기일'],
+    '오늘챙길목록': ['고객ID', '이름', '연락처', '해당규칙', '메모'],
+    '발송로그': ['날짜', '고객ID', '이름', '발송방식', '발송시각'],
+    '설정': ['항목', '값']
+  };
+
+  Object.keys(sheets).forEach(name => {
+    let sh = ss.getSheetByName(name);
+    if (!sh) sh = ss.insertSheet(name);
+    if (sh.getLastRow() === 0) {
+      sh.getRange(1, 1, 1, sheets[name].length).setValues([sheets[name]]);
+      sh.setFrozenRows(1);
+    }
+  });
+
+  const settingsSheet = ss.getSheetByName(SHEET_SETTINGS);
+  const defaults = [
+    ['알림시간(시)', '8'],
+    ['카카오_REST_API_KEY', '(카카오 개발자센터 앱의 REST API 키 입력)'],
+    ['카카오_액세스토큰', ''],
+    ['카카오_리프레시토큰', ''],
+    ['카카오_토큰만료시각', ''],
+    ['알림이메일주소', Session.getActiveUser().getEmail()],
+    ['카톡전송_활성화', 'TRUE'],
+    ['이메일전송_활성화', 'TRUE']
+  ];
+  if (settingsSheet.getLastRow() < 2) {
+    settingsSheet.getRange(2, 1, defaults.length, 2).setValues(defaults);
+  }
+
+  // 매일 8시 트리거 (중복 방지: 기존 트리거 제거 후 재설치)
+  ScriptApp.getProjectTriggers().forEach(t => {
+    if (t.getHandlerFunction() === 'sendNow') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('sendNow').timeBased().everyDays(1).atHour(8).create();
+
+  SpreadsheetApp.getUi().alert(
+    '초기 설정 완료: 탭 생성, 기본값 입력, 매일 8시 자동실행 트리거 등록됨.\n' +
+    '다음 순서: 1) 가짜 데이터 넣기  2) 카카오 연결하기  3) 미리보기'
+  );
+}
+
+// ── 가짜 데이터 넣기 (버튼 한 번으로 3개 탭 채움) ──
+function seedFakeData() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+
+  const customers = [
+    ['C001', '김민준', '010-1111-2001', '2026-09-20', '생일', '2026-08-10'],
+    ['C002', '이서연', '010-1111-2002', '2027-03-15', '생일', '2026-09-05'],
+    ['C003', '박도윤', '010-1111-2003', '2027-05-20', '생일', '2026-09-15'],
+    ['C004', '최지우', '010-1111-2004', '2027-01-01', '생일', '2026-09-14'],
+    ['C005', '정하윤', '010-1111-2005', '2026-09-19', '결혼기념일', '2026-09-16'],
+    ['C006', '강시우', '010-1111-2006', '2026-09-18', '생일', '2026-08-01'],
+    ['C007', '윤지호', '010-1111-2007', '2027-04-04', '생일', '2026-09-16'],
+    ['C008', '임서준', '010-1111-2008', '2027-07-07', '생일', '2026-09-17'],
+    ['C009', '한소율', '010-1111-2009', '2027-02-02', '생일', '2026-07-01'],
+    ['C010', '오하은', '010-1111-2010', '2027-10-10', '생일', '2026-09-16']
+  ];
+
+  // [고객ID, 날짜, 내용, 견적발송일, 견적상태] - 견적이 있는 고객만
+  const consults = [
+    ['C002', '2026-09-08', '견적 상담', '2026-09-08', '발송'],
+    ['C006', '2026-09-01', '견적 상담', '2026-09-01', '발송'],
+    ['C007', '2026-09-16', '견적 상담', '2026-09-16', '발송'],
+    ['C009', '2026-06-01', '견적 상담', '2026-06-01', '발송']
+  ];
+
+  // [고객ID, 구매일, 차종, 재구매예상일, 미수금액, 미수금기일]
+  const purchases = [
+    ['C001', '2024-09-01', '아반떼', '2026-11-01', 0, ''],
+    ['C002', '2025-01-10', 'K5', '2027-01-10', 0, ''],
+    ['C003', '2023-09-20', '쏘나타', '2026-09-22', 0, ''],
+    ['C004', '2026-08-01', '그랜저', '2029-08-01', 850000, '2026-09-10'],
+    ['C005', '2025-06-01', '투싼', '2027-06-01', 0, ''],
+    ['C006', '2022-09-18', '스포티지', '2026-09-19', 1200000, '2026-09-01'],
+    ['C007', '2025-12-01', '카니발', '2028-12-01', 0, ''],
+    ['C008', '2026-01-01', '아이오닉5', '2029-01-01', 300000, '2026-09-30'],
+    ['C009', '2021-07-01', '모닝', '2026-10-01', 0, ''],
+    ['C010', '2025-05-01', '레이', '2027-05-01', 0, '']
+  ];
+
+  writeRows_(ss.getSheetByName('고객명단'), customers);
+  writeRows_(ss.getSheetByName('상담기록'), consults);
+  writeRows_(ss.getSheetByName('구매기록'), purchases);
+
+  ui.alert('가짜 데이터 10명분을 고객명단/상담기록/구매기록 탭에 넣었습니다. 이제 "미리보기"를 눌러보세요.');
+}
+
+// 기존 데이터 지우고 새로 채우는 헬퍼 (헤더는 유지)
+function writeRows_(sh, rows) {
+  const lastRow = sh.getLastRow();
+  if (lastRow > 1) sh.getRange(2, 1, lastRow - 1, sh.getLastColumn()).clearContent();
+  if (rows.length > 0) sh.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
+}
+
+// ── 규칙 계산 ────────────────────────────────────────
+function getSettingValue(key) {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETTINGS);
+  const data = sh.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0] === key) return data[i][1];
+  }
+  return null;
+}
+
+function setSettingValue(key, value) {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETTINGS);
+  const data = sh.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0] === key) {
+      sh.getRange(i + 1, 2).setValue(value);
+      return;
+    }
+  }
+  sh.appendRow([key, value]);
+}
+
+function daysBetween(a, b) {
+  return Math.round((b - a) / (24 * 60 * 60 * 1000));
+}
+
+function nextAnniversary(date, today) {
+  let next = new Date(today.getFullYear(), date.getMonth(), date.getDate());
+  if (daysBetween(today, next) < 0) {
+    next = new Date(today.getFullYear() + 1, date.getMonth(), date.getDate());
+  }
+  return next;
+}
+
+/**
+ * 고객명단 + 상담기록 + 구매기록을 조인해서 오늘 챙길 고객 목록을 계산한다.
+ * 반환: [{id, name, phone, rules: [...], memo}]
+ */
+function computeTodayList() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const customers = sheetToObjects(ss.getSheetByName('고객명단'));
+  const consults = sheetToObjects(ss.getSheetByName('상담기록'));
+  const purchases = sheetToObjects(ss.getSheetByName('구매기록'));
+
+  const hitMap = {}; // id -> {name, phone, rules:Set, memo}
+
+  function addHit(c, ruleLabel) {
+    if (!hitMap[c['고객ID']]) {
+      hitMap[c['고객ID']] = { name: c['이름'], phone: c['연락처'], rules: [] };
+    }
+    hitMap[c['고객ID']].rules.push(ruleLabel);
+  }
+
+  customers.forEach(c => {
+    // R1: 21일 넘게 미연락
+    if (c['최근상담일']) {
+      const d = daysBetween(new Date(c['최근상담일']), today);
+      if (d > 21) addHit(c, '21일 이상 미연락');
+    }
+    // R5: 기념일 3일 전
+    if (c['기념일']) {
+      const next = nextAnniversary(new Date(c['기념일']), today);
+      const d = daysBetween(today, next);
+      if (d >= 0 && d <= 3) addHit(c, `${c['기념일종류'] || '기념일'} ${d}일 전`);
+    }
+  });
+
+  // R2: 견적 발송 후 7일 초과 무응답 (상담기록 기준)
+  consults.forEach(r => {
+    if (r['견적상태'] === '발송' && r['견적발송일']) {
+      const d = daysBetween(new Date(r['견적발송일']), today);
+      if (d > 7) {
+        const c = customers.find(x => x['고객ID'] === r['고객ID']);
+        if (c) addHit(c, '견적 발송 후 7일 초과 무응답');
+      }
+    }
+  });
+
+  // R3, R4: 구매기록 기준
+  purchases.forEach(p => {
+    const c = customers.find(x => x['고객ID'] === p['고객ID']);
+    if (!c) return;
+    if (p['재구매예상일']) {
+      const d = daysBetween(today, new Date(p['재구매예상일']));
+      if (d >= 0 && d <= 7) addHit(c, '재구매 예상 1주일 전');
+    }
+    if (p['미수금액'] > 0 && p['미수금기일']) {
+      const d = daysBetween(new Date(p['미수금기일']), today);
+      if (d > 0) addHit(c, `미수금 기일 ${d}일 경과`);
+    }
+  });
+
+  return Object.keys(hitMap).map(id => ({
+    id,
+    name: hitMap[id].name,
+    phone: hitMap[id].phone,
+    rules: hitMap[id].rules,
+    memo: hitMap[id].rules.join(' / ')
+  }));
+}
+
+function sheetToObjects(sh) {
+  const data = sh.getDataRange().getValues();
+  const headers = data[0];
+  return data.slice(1)
+    .filter(row => row.some(v => v !== ''))
+    .map(row => {
+      const obj = {};
+      headers.forEach((h, i) => (obj[h] = row[i]));
+      return obj;
+    });
+}
+
+// ── 미리보기: 오늘챙길목록 탭만 갱신 (발송 안 함, 발송로그 영향 없음) ──
+function previewToday() {
+  const list = computeTodayList();
+  writeTodaySheet(list);
+  SpreadsheetApp.getUi().alert(`미리보기 완료: 오늘 챙길 고객 ${list.length}명 (오늘챙길목록 탭 확인)`);
+}
+
+function writeTodaySheet(list) {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_TODAY);
+  sh.getRange(2, 1, Math.max(sh.getLastRow() - 1, 1), 5).clearContent();
+  if (list.length === 0) return;
+  const rows = list.map(x => [x.id, x.name, x.phone, x.rules.join(' + '), x.memo]);
+  sh.getRange(2, 1, rows.length, 5).setValues(rows);
+}
+
+// ── 발송로그: 오늘 이미 보낸 고객ID 목록 ──
+function getAlreadySentTodayIds_() {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_LOG);
+  const todayStr = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+  const data = sh.getDataRange().getValues();
+  const ids = new Set();
+  for (let i = 1; i < data.length; i++) {
+    const rowDate = data[i][0] instanceof Date
+      ? Utilities.formatDate(data[i][0], 'Asia/Seoul', 'yyyy-MM-dd')
+      : String(data[i][0]);
+    if (rowDate === todayStr) ids.add(String(data[i][1]));
+  }
+  return ids;
+}
+
+function logSent_(list, method) {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_LOG);
+  const todayStr = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+  const now = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd HH:mm');
+  const rows = list.map(x => [todayStr, x.id, x.name, method, now]);
+  if (rows.length > 0) {
+    sh.getRange(sh.getLastRow() + 1, 1, rows.length, 5).setValues(rows);
+  }
+}
+
+// ── 지금 보내기: 카톡 나에게 보내기 시도 → 실패 시 이메일. 같은 날 중복 발송 제외 ──
+function sendNow() {
+  const fullList = computeTodayList();
+  writeTodaySheet(fullList); // 오늘챙길목록 탭은 항상 전체 대상으로 보여줌
+
+  const alreadySent = getAlreadySentTodayIds_();
+  const list = fullList.filter(x => !alreadySent.has(String(x.id)));
+
+  if (fullList.length === 0) {
+    notifyResult_('오늘 챙길 고객이 없습니다.');
+    return;
+  }
+  if (list.length === 0) {
+    notifyResult_(`오늘 챙길 고객 ${fullList.length}명은 이미 전부 발송 완료된 상태입니다. (중복 발송 방지)`);
+    return;
+  }
+
+  const message = buildMessage_(list);
+  const kakaoEnabled = String(getSettingValue('카톡전송_활성화')).toUpperCase() === 'TRUE';
+  let sent = false;
+
+  if (kakaoEnabled) {
+    sent = trySendKakaoToMe_(message);
+  }
+  if (!sent) {
+    sendEmailFallback_(message);
+    logSent_(list, '이메일');
+    notifyResult_(
+      `카톡 전송 실패(또는 비활성화) → 이메일로 발송함. 신규 대상 ${list.length}명` +
+      (alreadySent.size > 0 ? ` (이미 발송된 ${alreadySent.size}명은 제외)` : '') + '.'
+    );
+  } else {
+    logSent_(list, '카카오');
+    notifyResult_(
+      `카카오 "나에게 보내기"로 발송 완료. 신규 대상 ${list.length}명` +
+      (alreadySent.size > 0 ? ` (이미 발송된 ${alreadySent.size}명은 제외)` : '') + '.'
+    );
+  }
+}
+
+function buildMessage_(list) {
+  const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+  let msg = `[오늘(${today}) 챙길 고객 ${list.length}명]\n\n`;
+  list.forEach((x, i) => {
+    msg += `${i + 1}. ${x.name} (${x.phone})\n   - ${x.rules.join(' / ')}\n`;
+  });
+  return msg;
+}
+
+// ══════════════════════════════════════════════════════
+// 카카오 "나에게 보내기" - 최초 1회 로그인 후 리프레시 토큰으로 자동 연장
+// ══════════════════════════════════════════════════════
+
+/**
+ * 메뉴에서 실행: 카카오 로그인 링크를 보여주는 다이얼로그를 연다.
+ * 최초 1회만 누르면 되고, 이후에는 리프레시 토큰으로 액세스 토큰이 자동 갱신된다.
+ */
+function showKakaoLoginDialog() {
+  const restApiKey = getSettingValue('카카오_REST_API_KEY');
+  const ui = SpreadsheetApp.getUi();
+
+  if (!restApiKey || restApiKey.indexOf('입력') >= 0) {
+    ui.alert(
+      '먼저 "설정" 탭의 카카오_REST_API_KEY 값에 카카오 개발자센터에서 발급받은 REST API 키를 넣어주세요.\n' +
+      '(https://developers.kakao.com ▸ 내 애플리케이션 ▸ 앱 선택 ▸ 요약정보)'
+    );
+    return;
+  }
+
+  const redirectUri = ScriptApp.getService().getUrl(); // 이 웹앱 자신의 URL (먼저 한 번 배포되어 있어야 함)
+  if (!redirectUri) {
+    ui.alert('먼저 "배포 ▸ 새 배포 ▸ 웹 앱"으로 한 번 배포한 뒤 다시 시도해주세요. (배포 URL이 카카오 리다이렉트 주소로 쓰입니다)');
+    return;
+  }
+  setSettingValue('카카오_리다이렉트URI', redirectUri);
+
+  const authUrl = 'https://kauth.kakao.com/oauth/authorize'
+    + '?client_id=' + encodeURIComponent(restApiKey)
+    + '&redirect_uri=' + encodeURIComponent(redirectUri)
+    + '&response_type=code'
+    + '&scope=talk_message';
+
+  const html = HtmlService.createHtmlOutput(
+    `<p>아래 링크를 눌러 카카오 계정으로 로그인하고 "동의하기"를 눌러주세요. (최초 1회만 하면 됩니다)</p>
+     <p><a href="${authUrl}" target="_blank">카카오 로그인하러 가기</a></p>
+     <p style="color:#888;font-size:12px;">로그인 완료 후 이 창은 닫으셔도 됩니다.</p>`
+  ).setWidth(420).setHeight(180);
+  ui.showModalDialog(html, '카카오 연결');
+}
+
+/**
+ * 카카오 로그인 리다이렉트를 받는 지점. 웹앱 doGet 이 code 파라미터를 감지하면 여기로 옴.
+ * 인가코드 → 액세스/리프레시 토큰 교환 후 설정 탭에 저장.
+ */
+function handleKakaoAuthCode_(code) {
+  const restApiKey = getSettingValue('카카오_REST_API_KEY');
+  const redirectUri = getSettingValue('카카오_리다이렉트URI') || ScriptApp.getService().getUrl();
+
+  const res = UrlFetchApp.fetch('https://kauth.kakao.com/oauth/token', {
+    method: 'post',
+    payload: {
+      grant_type: 'authorization_code',
+      client_id: restApiKey,
+      redirect_uri: redirectUri,
+      code: code
+    },
+    muteHttpExceptions: true
+  });
+
+  const body = JSON.parse(res.getContentText());
+  if (body.access_token) {
+    saveKakaoTokens_(body);
+    return true;
+  }
+  return false;
+}
+
+function saveKakaoTokens_(tokenResponse) {
+  setSettingValue('카카오_액세스토큰', tokenResponse.access_token);
+  if (tokenResponse.refresh_token) {
+    setSettingValue('카카오_리프레시토큰', tokenResponse.refresh_token);
+  }
+  const expiresAt = new Date(Date.now() + (tokenResponse.expires_in || 21600) * 1000);
+  setSettingValue('카카오_토큰만료시각', Utilities.formatDate(expiresAt, 'Asia/Seoul', "yyyy-MM-dd'T'HH:mm:ss"));
+}
+
+/**
+ * 액세스 토큰이 만료됐거나 곧 만료되면 리프레시 토큰으로 자동 재발급.
+ * 리프레시 토큰 자체도 만료(보통 2달)될 수 있는데, 그때만 "카카오 연결하기"를 다시 눌러주면 된다.
+ */
+function ensureFreshKakaoToken_() {
+  const expiresAtStr = getSettingValue('카카오_토큰만료시각');
+  const refreshToken = getSettingValue('카카오_리프레시토큰');
+  if (!refreshToken) return null; // 최초 로그인 전
+
+  const expiresAt = expiresAtStr ? new Date(expiresAtStr) : null;
+  const needsRefresh = !expiresAt || (expiresAt.getTime() - Date.now() < 10 * 60 * 1000); // 만료 10분 전이면 갱신
+
+  if (!needsRefresh) {
+    return getSettingValue('카카오_액세스토큰');
+  }
+
+  const restApiKey = getSettingValue('카카오_REST_API_KEY');
+  const res = UrlFetchApp.fetch('https://kauth.kakao.com/oauth/token', {
+    method: 'post',
+    payload: {
+      grant_type: 'refresh_token',
+      client_id: restApiKey,
+      refresh_token: refreshToken
+    },
+    muteHttpExceptions: true
+  });
+
+  const body = JSON.parse(res.getContentText());
+  if (body.access_token) {
+    saveKakaoTokens_(body);
+    return body.access_token;
+  }
+  return null; // 리프레시 토큰도 만료됨 -> 재로그인 필요
+}
+
+/**
+ * 카카오 "나에게 보내기" API 호출. 토큰은 ensureFreshKakaoToken_ 이 자동으로 최신 상태 유지.
+ */
+function trySendKakaoToMe_(message) {
+  const token = ensureFreshKakaoToken_();
+  if (!token) return false; // 로그인 전이거나 리프레시 토큰 만료
+
+  const url = 'https://kapi.kakao.com/v2/api/talk/memo/default/send';
+  const templateObject = {
+    object_type: 'text',
+    text: message,
+    link: { web_url: 'https://developers.kakao.com', mobile_web_url: 'https://developers.kakao.com' }
+  };
+
+  const options = {
+    method: 'post',
+    headers: { Authorization: 'Bearer ' + token },
+    payload: { template_object: JSON.stringify(templateObject) },
+    muteHttpExceptions: true
+  };
+
+  try {
+    const res = UrlFetchApp.fetch(url, options);
+    return res.getResponseCode() === 200;
+  } catch (e) {
+    return false;
+  }
+}
+
+function sendEmailFallback_(message) {
+  const to = getSettingValue('알림이메일주소') || Session.getActiveUser().getEmail();
+  MailApp.sendEmail({
+    to,
+    subject: '[고객관리] 오늘 챙길 고객 목록',
+    body: message
+  });
+}
+
+function notifyResult_(text) {
+  try {
+    SpreadsheetApp.getUi().alert(text);
+  } catch (e) {
+    // 트리거로 실행될 때는 UI가 없으므로 무시
+    Logger.log(text);
+  }
+}
+
+// ── 대시보드 웹앱 (모바일 열람용) + 카카오 로그인 리다이렉트 수신 ──
+function doGet(e) {
+  // 카카오 로그인 후 ?code=... 로 돌아온 경우 토큰 교환만 하고 안내 페이지 표시
+  if (e && e.parameter && e.parameter.code) {
+    const ok = handleKakaoAuthCode_(e.parameter.code);
+    return HtmlService.createHtmlOutput(
+      ok
+        ? '<p>카카오 연결 완료! 이 창은 닫으셔도 됩니다.</p>'
+        : '<p>카카오 연결 실패. 스프레드시트로 돌아가 다시 시도해주세요.</p>'
+    );
+  }
+
+  const list = computeTodayList();
+  const template = HtmlService.createTemplateFromFile('대시보드');
+  template.list = list;
+  template.today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd (E)');
+  return template.evaluate().setTitle('오늘 챙길 고객').addMetaTag('viewport', 'width=device-width, initial-scale=1');
+}
