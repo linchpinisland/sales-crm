@@ -1,0 +1,319 @@
+/**
+ * Rules.gs — 알림 규칙 엔진 (순수 함수).
+ * SpreadsheetApp 등 Apps Script 서비스를 쓰지 않는다. Node vm 에서도 그대로 실행된다.
+ * 날짜 유틸 / 필터 파서 / 템플릿 렌더러 / 규칙 평가기 / 일일 요약 청크 생성기를 담는다.
+ */
+
+/* ---------------------------------------------------------------------- */
+/* 날짜 유틸                                                               */
+/* ---------------------------------------------------------------------- */
+
+/** 다양한 입력(Date, 'YYYY-M-D', 'YYYY.MM.DD' 등) → Date(시간 00:00) 또는 null */
+function toDate(v) {
+  if (v === null || v === undefined || v === '') return null;
+  if (v instanceof Date) {
+    if (isNaN(v.getTime())) return null;
+    return new Date(v.getFullYear(), v.getMonth(), v.getDate());
+  }
+  var s = String(v).trim();
+  if (!s) return null;
+  var m = s.match(/^(\d{4})[-.\/](\d{1,2})[-.\/](\d{1,2})/);
+  if (!m) return null;
+  var y = parseInt(m[1], 10), mo = parseInt(m[2], 10) - 1, d = parseInt(m[3], 10);
+  var dt = new Date(y, mo, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo || dt.getDate() !== d) return null;
+  return dt;
+}
+
+function pad2_(n) { return n < 10 ? '0' + n : '' + n; }
+
+/** Date|string → 'YYYY-MM-DD' 또는 '' */
+function fmtDate(d) {
+  var dt = (d instanceof Date) ? d : toDate(d);
+  if (!dt || isNaN(dt.getTime())) return '';
+  return dt.getFullYear() + '-' + pad2_(dt.getMonth() + 1) + '-' + pad2_(dt.getDate());
+}
+
+/** a → b 사이 일수 (b - a). 둘 중 하나라도 파싱 실패하면 null */
+function daysBetween(a, b) {
+  var da = toDate(a), db = toDate(b);
+  if (!da || !db) return null;
+  return Math.round((db.getTime() - da.getTime()) / 86400000);
+}
+
+/** Date|string 에 n일 더한 Date (파싱 실패 시 null) */
+function addDays(d, n) {
+  var dt = toDate(d);
+  if (!dt) return null;
+  return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() + Number(n));
+}
+
+function isLeap_(y) { return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0; }
+
+/** 생일/기념일 등 월-일 반복 → today 기준 다음(오늘 포함) 도래일. 2/29 는 평년에 2/28로 취급 */
+function nextAnniversary(anniv, today) {
+  var b = toDate(anniv), t = toDate(today);
+  if (!b || !t) return null;
+  function build(y) {
+    var mo = b.getMonth(), da = b.getDate();
+    if (mo === 1 && da === 29 && !isLeap_(y)) da = 28;
+    return new Date(y, mo, da);
+  }
+  var todayOnly = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+  var cand = build(t.getFullYear());
+  if (cand.getTime() < todayOnly.getTime()) cand = build(t.getFullYear() + 1);
+  return cand;
+}
+
+/* ---------------------------------------------------------------------- */
+/* 필터                                                                    */
+/* ---------------------------------------------------------------------- */
+
+/** '필드=값;필드!=값' → [{field, op, value}] */
+function parseFilter(str) {
+  if (!str) return [];
+  return String(str).split(';').map(function (s) { return s.trim(); }).filter(function (s) { return s; }).map(function (s) {
+    var idx = s.indexOf('!=');
+    if (idx >= 0) return { field: s.slice(0, idx).trim(), op: '!=', value: s.slice(idx + 2).trim() };
+    idx = s.indexOf('=');
+    if (idx >= 0) return { field: s.slice(0, idx).trim(), op: '=', value: s.slice(idx + 1).trim() };
+    return { field: s.trim(), op: '=', value: '' };
+  });
+}
+
+function valuesEqual_(a, b) {
+  var as = (a === null || a === undefined) ? '' : String(a).trim();
+  var bs = (b === null || b === undefined) ? '' : String(b).trim();
+  var an = Number(as.replace(/,/g, ''));
+  var bn = Number(bs.replace(/,/g, ''));
+  if (as !== '' && bs !== '' && !isNaN(an) && !isNaN(bn)) return an === bn;
+  return as === bs;
+}
+
+/** record 가 filter 목록(AND)을 모두 만족하는지 */
+function matchesFilter_(record, filters) {
+  if (!filters || !filters.length) return true;
+  return filters.every(function (f) {
+    var eq = valuesEqual_(record[f.field], f.value);
+    return f.op === '!=' ? !eq : eq;
+  });
+}
+
+/* ---------------------------------------------------------------------- */
+/* 템플릿                                                                  */
+/* ---------------------------------------------------------------------- */
+
+function numberWithCommas_(n) {
+  var neg = n < 0;
+  n = Math.abs(n);
+  var parts = String(n).split('.');
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return (neg ? '-' : '') + parts.join('.');
+}
+
+function formatValue_(v) {
+  if (v === null || v === undefined) return '';
+  if (v instanceof Date) return fmtDate(v);
+  if (typeof v === 'number') return numberWithCommas_(v);
+  return String(v);
+}
+
+/** '{필드}' 플레이스홀더를 obj 값으로 치환. 미지 플레이스홀더는 빈 문자열 */
+function renderTemplate(template, obj) {
+  obj = obj || {};
+  return String(template || '').replace(/\{([^}]+)\}/g, function (_, key) {
+    if (!(key in obj)) return '';
+    return formatValue_(obj[key]);
+  });
+}
+
+/* ---------------------------------------------------------------------- */
+/* 보조                                                                    */
+/* ---------------------------------------------------------------------- */
+
+/** 배열 → {키값: 원소} 맵 */
+function indexBy_(arr, key) {
+  var m = {};
+  (arr || []).forEach(function (item) { m[item[key]] = item; });
+  return m;
+}
+
+/** evaluateRules 결과를 규칙별로 묶기 (등장 순서 유지) */
+function groupByRule(cands) {
+  var order = [], map = {};
+  (cands || []).forEach(function (c) {
+    if (!map[c.ruleId]) {
+      map[c.ruleId] = { ruleId: c.ruleId, ruleName: c.ruleName, items: [] };
+      order.push(map[c.ruleId]);
+    }
+    map[c.ruleId].items.push(c);
+  });
+  return order;
+}
+
+/* ---------------------------------------------------------------------- */
+/* 규칙 평가                                                                */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * @param {{customers:Array, contacts:Array, purchases:Array}} data
+ * @param {Array} rules  알림규칙 시트 헤더 기반 객체 배열
+ * @param {Date|string} today
+ * @param {{onlyImmediate?:boolean}} [opts]
+ * @returns {Array} candidate 목록. 각 candidate: {ruleId, ruleName, customerId, customerName, message, days, immediate, rowId}
+ */
+function evaluateRules(data, rules, today, opts) {
+  opts = opts || {};
+  data = data || {};
+  var t = toDate(today) || toDate(new Date());
+  var customers = data.customers || [], contacts = data.contacts || [], purchases = data.purchases || [];
+  var customersById = indexBy_(customers, '고객ID');
+  var sheetData = { '고객': customers, '상담기록': contacts, '구매기록': purchases };
+
+  var results = [];
+
+  (rules || []).forEach(function (rule) {
+    if (String(rule['사용']) !== 'Y') return;
+    var immediate = String(rule['즉시발송']) === 'Y';
+    if (opts.onlyImmediate && !immediate) return;
+
+    var targetSheet = rule['대상시트'];
+    var records = sheetData[targetSheet] || [];
+    var condType = rule['조건유형'];
+    var baseField = rule['기준필드'];
+    var n = Number(rule['일수']) || 0;
+    var filters = parseFilter(rule['필터']);
+    var rowIdField = ID_FIELD[targetSheet];
+
+    var perCustomerBest = {};
+
+    records.forEach(function (rec) {
+      if (!matchesFilter_(rec, filters)) return;
+
+      var customerId = rec['고객ID'];
+      var customer = (targetSheet === '고객') ? rec : (customersById[customerId] || {});
+
+      var days = null, urgency = 0;
+
+      if (condType === '경과일이상') {
+        var base = toDate(rec[baseField]);
+        if (!base) return;
+        days = daysBetween(base, t);
+        if (days === null || days < n) return;
+        urgency = -days;
+      } else if (condType === 'D일이내') {
+        var base2 = toDate(rec[baseField]);
+        if (!base2) return;
+        days = daysBetween(t, base2);
+        if (days === null || days < 0 || days > n) return;
+        urgency = days;
+      } else if (condType === '연간반복D일이내') {
+        if (!rec[baseField]) return;
+        var anniv = nextAnniversary(rec[baseField], t);
+        if (!anniv) return;
+        days = daysBetween(t, anniv);
+        if (days === null || days < 0 || days > n) return;
+        urgency = days;
+      } else if (condType === '필드값일치') {
+        days = null;
+        urgency = 0;
+      } else {
+        return;
+      }
+
+      var dDisplay = (days === null) ? '' : (days === 0 ? '오늘' : 'D-' + days);
+
+      var ctx = {};
+      for (var k in customer) ctx[k] = customer[k];
+      for (var k2 in rec) {
+        if (rec[k2] !== undefined && rec[k2] !== '') ctx[k2] = rec[k2];
+      }
+      ctx['일수'] = days;
+      ctx['D-표기'] = dDisplay;
+      ctx['기준일'] = baseField ? rec[baseField] : '';
+
+      var message = renderTemplate(rule['메시지템플릿'], ctx);
+
+      var cand = {
+        ruleId: rule['규칙ID'],
+        ruleName: rule['규칙명'],
+        customerId: customerId,
+        customerName: customer['고객명'] || rec['고객명'] || '',
+        message: message,
+        days: days,
+        immediate: immediate,
+        rowId: rowIdField ? rec[rowIdField] : undefined,
+        urgency: urgency
+      };
+
+      var key = customerId || cand.customerName;
+      if (!perCustomerBest[key] || cand.urgency < perCustomerBest[key].urgency) {
+        perCustomerBest[key] = cand;
+      }
+    });
+
+    Object.keys(perCustomerBest).forEach(function (k) { results.push(perCustomerBest[k]); });
+  });
+
+  var ruleOrderMap = {};
+  (rules || []).forEach(function (r) { ruleOrderMap[r['규칙ID']] = Number(r['정렬순서']) || 0; });
+  results.sort(function (a, b) {
+    var ao = ruleOrderMap[a.ruleId] || 0, bo = ruleOrderMap[b.ruleId] || 0;
+    if (ao !== bo) return ao - bo;
+    return a.urgency - b.urgency;
+  });
+
+  results.forEach(function (c) { delete c.urgency; });
+  return results;
+}
+
+/* ---------------------------------------------------------------------- */
+/* 일일 요약                                                                */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * @param {Array} candidates  evaluateRules 결과
+ * @param {{today?:Date|string, maxItems?:number, limit?:number, userName?:string}} [opts]
+ * @returns {string[]} 카카오 텍스트 청크 목록(각 <= limit자)
+ */
+function buildDailySummary(candidates, opts) {
+  opts = opts || {};
+  var t = toDate(opts.today) || toDate(new Date());
+  var limit = opts.limit || 200;
+  var maxItems = opts.maxItems || 15;
+  var list = candidates || [];
+  var header = '[오늘 챙길 고객 ' + (t.getMonth() + 1) + '/' + t.getDate() + '] ';
+
+  if (!list.length) {
+    return [header + '오늘은 알림 0건. 편안한 하루 되세요.'];
+  }
+
+  var lines = [header + list.length + '건'];
+  var shown = list.slice(0, maxItems);
+  shown.forEach(function (c) { lines.push('- ' + c.message); });
+  if (list.length > maxItems) {
+    lines.push('…외 ' + (list.length - maxItems) + '건');
+  }
+
+  var reserve = 10; // ' (i/n)' 접미사용 여유
+  var chunks = [];
+  var cur = '';
+  lines.forEach(function (line) {
+    var candidate = cur ? cur + '\n' + line : line;
+    if (cur && candidate.length > limit - reserve) {
+      chunks.push(cur);
+      cur = line;
+    } else {
+      cur = candidate;
+    }
+  });
+  if (cur) chunks.push(cur);
+
+  var total = chunks.length;
+  return chunks.map(function (c, i) {
+    var suffix = ' (' + (i + 1) + '/' + total + ')';
+    var s = c + suffix;
+    if (s.length > limit) s = c.slice(0, limit - suffix.length) + suffix;
+    return s;
+  });
+}
