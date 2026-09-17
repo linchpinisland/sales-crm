@@ -1,0 +1,307 @@
+/**
+ * Rules.gs — 알림 규칙 엔진 (순수 함수, 시트 접근 없음).
+ * spec.md 4장 기준:
+ *   조건유형 4가지: 경과일이상(기준일→오늘 ≥ N) · D일이내(오늘→기준일 0~N) ·
+ *                 연간반복D일이내(생일처럼 매년, 2/29는 평년 2/28) · 필드값일치(필터만)
+ *   필터: '필드=값;필드!=값'
+ *   템플릿 플레이스홀더: {고객명} {일수} {D-표기} {기준일} + 임의 컬럼명
+ *   같은 규칙·같은 고객은 가장 급한 1건만. 정렬은 규칙 정렬순서 → 급한 순.
+ */
+
+// ── 날짜 유틸 ──────────────────────────────────────────────
+
+/** 'YYYY-M-D' / 'YYYY.MM.DD' / 'YYYY/MM/DD' 문자열, Date, 빈 값 → Date(시각 제거) 또는 null */
+function toDate(v) {
+  if (v === null || v === undefined || v === '') return null;
+  if (v instanceof Date) {
+    if (isNaN(v.getTime())) return null;
+    return new Date(v.getFullYear(), v.getMonth(), v.getDate());
+  }
+  var s = String(v).trim();
+  if (!s) return null;
+  var m = s.match(/^(\d{4})[-.\/](\d{1,2})[-.\/](\d{1,2})/);
+  if (!m) return null;
+  var y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  var dt = new Date(y, mo - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null;
+  return dt;
+}
+
+/** Date → 'YYYY-MM-DD' */
+function fmtDate(d) {
+  if (!d) return '';
+  return d.getFullYear() + '-' + pad2_(d.getMonth() + 1) + '-' + pad2_(d.getDate());
+}
+function pad2_(n) { return n < 10 ? '0' + n : '' + n; }
+
+/** Date|string → n일 더한 Date (시각 없음) */
+function addDays(d, n) {
+  var base = toDate(d);
+  if (!base) return null;
+  return new Date(base.getFullYear(), base.getMonth(), base.getDate() + Number(n));
+}
+
+/** a→b 사이 일수(b - a). 둘 중 하나라도 유효하지 않으면 null */
+function daysBetween(a, b) {
+  var da = toDate(a), db = toDate(b);
+  if (!da || !db) return null;
+  return Math.round((db.getTime() - da.getTime()) / 86400000);
+}
+
+function isLeapYear_(y) { return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0; }
+
+/** base(생일 등)의 월/일이 today가 속한 해(또는 그 다음 해)에 돌아오는 날짜. today 당일 포함.
+ *  2/29는 평년에는 2/28로 취급. */
+function nextAnniversary(base, today) {
+  var b = toDate(base), t = toDate(today);
+  if (!b || !t) return null;
+  function inYear(y) {
+    var mo = b.getMonth(), d = b.getDate();
+    if (mo === 1 && d === 29 && !isLeapYear_(y)) d = 28;
+    return new Date(y, mo, d);
+  }
+  var cand = inYear(t.getFullYear());
+  if (daysBetween(t, cand) < 0) cand = inYear(t.getFullYear() + 1);
+  return cand;
+}
+
+// ── 필터 ──────────────────────────────────────────────────
+
+/** '필드=값;필드!=값' → [{field, op, value}] */
+function parseFilter(s) {
+  s = String(s || '').trim();
+  if (!s) return [];
+  var out = [];
+  s.split(';').forEach(function (part) {
+    part = part.trim();
+    if (!part) return;
+    var m = part.match(/^(.+?)(!=|=)(.*)$/);
+    if (!m) return;
+    out.push({ field: m[1].trim(), op: m[2], value: m[3].trim() });
+  });
+  return out;
+}
+
+function normalizeCompareValue_(v) {
+  if (v === null || v === undefined) return '';
+  var s = String(v).trim();
+  var numStr = s.replace(/,/g, '');
+  if (numStr !== '' && !isNaN(Number(numStr))) return Number(numStr);
+  return s;
+}
+
+/** obj가 filters(parseFilter 결과) 전부를 만족하는지 */
+function matchesFilter_(obj, filters) {
+  return (filters || []).every(function (f) {
+    var eq = normalizeCompareValue_(obj[f.field]) === normalizeCompareValue_(f.value);
+    return f.op === '!=' ? !eq : eq;
+  });
+}
+
+// ── 템플릿 ────────────────────────────────────────────────
+
+function numberWithCommas_(n) {
+  var s = String(Math.trunc(n));
+  var neg = s.charAt(0) === '-';
+  if (neg) s = s.slice(1);
+  s = s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return (neg ? '-' : '') + s;
+}
+
+/** '{필드}' 플레이스홀더를 obj 값으로 치환. 숫자는 천단위 콤마, Date는 fmtDate, 없으면 빈 문자열 */
+function renderTemplate(tpl, obj) {
+  obj = obj || {};
+  return String(tpl == null ? '' : tpl).replace(/\{([^}]+)\}/g, function (_, key) {
+    var v = obj[key];
+    if (v === undefined || v === null || v === '') return '';
+    if (v instanceof Date) return fmtDate(v);
+    if (typeof v === 'number') return numberWithCommas_(v);
+    return String(v);
+  });
+}
+
+// ── 보조 ──────────────────────────────────────────────────
+
+function yn_(v) { return String(v || '').trim().toUpperCase() === 'Y'; }
+
+function indexBy_(list, field) {
+  var o = {};
+  (list || []).forEach(function (item) { o[item[field]] = item; });
+  return o;
+}
+
+function sheetRows_(data, sheetName) {
+  data = data || {};
+  if (sheetName === '고객') return data.customers || [];
+  if (sheetName === '상담기록') return data.contacts || [];
+  if (sheetName === '구매기록') return data.purchases || [];
+  return [];
+}
+
+/** D-표기: 0일 → '오늘', 그 외 → 'D-N' */
+function dDisplay_(days) {
+  if (days === null || days === undefined) return '';
+  return days === 0 ? '오늘' : 'D-' + days;
+}
+
+// ── 규칙 평가 ─────────────────────────────────────────────
+
+/**
+ * @param {{customers, contacts, purchases}} data
+ * @param {Object[]} ruleDefs  알림규칙 시트 행(객체) 배열
+ * @param {Date|string} today
+ * @param {{onlyImmediate?:boolean}} [opts]
+ * @returns {Object[]} 후보 배열: {ruleId, ruleName, customerId, customerName, rowId, days, message, immediate}
+ */
+function evaluateRules(data, ruleDefs, today, opts) {
+  opts = opts || {};
+  var t = toDate(today) || toDate(new Date());
+  var candidates = [];
+
+  (ruleDefs || []).forEach(function (rule) {
+    if (!yn_(rule['사용'])) return;
+    var immediate = yn_(rule['즉시발송']);
+    if (opts.onlyImmediate && !immediate) return;
+
+    var sheetName = rule['대상시트'];
+    var rows = sheetRows_(data, sheetName);
+    var filters = parseFilter(rule['필터']);
+    var field = rule['기준필드'];
+    var cond = rule['조건유형'];
+    var n = Number(rule['일수']) || 0;
+    var idField = (typeof ID_FIELD !== 'undefined' && ID_FIELD[sheetName]) || '고객ID';
+    var customersById = indexBy_(data && data.customers, '고객ID');
+
+    rows.forEach(function (row) {
+      if (!matchesFilter_(row, filters)) return;
+
+      var days = null, base = null;
+
+      if (cond === '경과일이상') {
+        base = toDate(row[field]);
+        if (!base) return;
+        days = daysBetween(base, t);
+        if (days === null || days < n) return;
+      } else if (cond === 'D일이내') {
+        base = toDate(row[field]);
+        if (!base) return;
+        days = daysBetween(t, base);
+        if (days === null || days < 0 || days > n) return;
+      } else if (cond === '연간반복D일이내') {
+        base = toDate(row[field]);
+        if (!base) return;
+        var next = nextAnniversary(base, t);
+        days = daysBetween(t, next);
+        if (days === null || days > n) return;
+        base = next;
+      } else if (cond === '필드값일치') {
+        // 필터만으로 판정, days/base 없음
+      } else {
+        return;
+      }
+
+      var ctx = {};
+      var cust = sheetName !== '고객' ? customersById[row['고객ID']] : null;
+      if (cust) for (var ck in cust) if (Object.prototype.hasOwnProperty.call(cust, ck)) ctx[ck] = cust[ck];
+      for (var k in row) if (Object.prototype.hasOwnProperty.call(row, k)) ctx[k] = row[k];
+      ctx['일수'] = days;
+      ctx['D-표기'] = dDisplay_(days);
+      ctx['기준일'] = base;
+
+      var urgency = cond === '경과일이상' ? -days : (days === null ? 0 : days);
+
+      candidates.push({
+        ruleId: rule['규칙ID'],
+        ruleName: rule['규칙명'],
+        sortOrder: Number(rule['정렬순서']) || 0,
+        customerId: row['고객ID'],
+        customerName: ctx['고객명'],
+        rowId: row[idField],
+        days: days,
+        message: renderTemplate(rule['메시지템플릿'], ctx),
+        immediate: immediate,
+        urgency: urgency
+      });
+    });
+  });
+
+  // 같은 규칙·같은 고객은 가장 급한(urgency 최소) 1건만
+  var best = {};
+  var order = [];
+  candidates.forEach(function (c) {
+    var key = c.ruleId + '|' + c.customerId;
+    if (!Object.prototype.hasOwnProperty.call(best, key)) order.push(key);
+    if (!best[key] || c.urgency < best[key].urgency) best[key] = c;
+  });
+  var out = order.map(function (key) { return best[key]; });
+
+  // 정렬순서 → 급한 순
+  out.sort(function (a, b) {
+    if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+    return a.urgency - b.urgency;
+  });
+
+  return out;
+}
+
+/** ruleId 기준으로 후보를 묶어 [{ruleId, ruleName, items}] 반환 (입력 순서 보존) */
+function groupByRule(candidates) {
+  var map = {}, order = [];
+  (candidates || []).forEach(function (c) {
+    if (!map[c.ruleId]) {
+      map[c.ruleId] = { ruleId: c.ruleId, ruleName: c.ruleName, items: [] };
+      order.push(map[c.ruleId]);
+    }
+    map[c.ruleId].items.push(c);
+  });
+  return order;
+}
+
+// ── 일일 요약 ─────────────────────────────────────────────
+
+/**
+ * @param {Object[]} candidates  evaluateRules 결과
+ * @param {{today:(Date|string), maxItems?:number, limit?:number, userName?:string}} opts
+ * @returns {string[]} 카카오 텍스트 청크 배열(각 <= limit자)
+ */
+function buildDailySummary(candidates, opts) {
+  opts = opts || {};
+  var t = toDate(opts.today) || toDate(new Date());
+  var limit = opts.limit || 200;
+  var maxItems = opts.maxItems || 15;
+  var list = candidates || [];
+  var total = list.length;
+  var md = (t.getMonth() + 1) + '/' + t.getDate();
+  var headerPrefix = '[오늘 챙길 고객 ' + md + '] ';
+
+  if (total === 0) {
+    return [headerPrefix + '오늘은 알림 0건. 편안한 하루 되세요.'];
+  }
+
+  var lines = [headerPrefix + total + '건'];
+  var shown = list.slice(0, maxItems);
+  shown.forEach(function (c) { lines.push('- ' + c.message); });
+  var omitted = total - shown.length;
+  if (omitted > 0) lines.push('…외 ' + omitted + '건');
+
+  var full = lines.join('\n');
+  if (full.length <= limit) return [full];
+
+  var reserve = 8; // ' (i/N)' 여유
+  var chunks = [];
+  var cur = '';
+  lines.forEach(function (line) {
+    var candidate = cur ? cur + '\n' + line : line;
+    if (cur && candidate.length > limit - reserve) {
+      chunks.push(cur);
+      cur = line;
+    } else {
+      cur = candidate;
+    }
+  });
+  if (cur) chunks.push(cur);
+
+  var totalChunks = chunks.length;
+  return chunks.map(function (c, i) { return c + ' (' + (i + 1) + '/' + totalChunks + ')'; });
+}
