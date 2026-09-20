@@ -12,3 +12,6 @@ Thumbs.db
 
 # 에디터·세션 로컬 설정
 .claude/
+
+# 자동 설치 상태(개인 환경)
+.setup-state.json

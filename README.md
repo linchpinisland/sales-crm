@@ -21,7 +21,17 @@ R10 | VIP 미접촉 | Y | 고객 | 마지막연락일 | 경과일이상 | 10 | �
 
 조건유형: `경과일이상` · `D일이내` · `연간반복D일이내` · `필드값일치`. 템플릿 플레이스홀더: `{고객명} {일수} {D-표기} {기준일}` + 아무 컬럼명.
 
-## 설치 (비개발자, 15분)
+## 가장 쉬운 설치 — AI에게 맡기기
+
+클로드 코드(또는 Codex·Antigravity)에 이 한 줄을 보내세요.
+
+```text
+https://github.com/linchpinisland/sales-crm 이거 세팅해줘
+```
+
+AI가 구글 시트 만들기, 코드 넣기, 휴대폰용 웹앱 배포까지 합니다. 사람은 구글 로그인과 "허용"만 누르면 됩니다. (지침: [CLAUDE.md](CLAUDE.md), 스크립트: `node setup.mjs`)
+
+## 손으로 설치 (비개발자, 15분)
 
 1. **[템플릿 사본 만들기](https://docs.google.com/spreadsheets/d/1W9yToroXKZdTYdUYhm09E1MYHAN3OhAxxl_EGJKSESs/copy)** 링크 클릭 → 사본 만들기
 2. 메뉴 **[고객관리] → [① 초기 설정 실행]** (권한 승인)

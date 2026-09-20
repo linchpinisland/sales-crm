@@ -9,12 +9,24 @@ function setupAll() {
   log.push(applyValidations());
   log.push(seedDefaultRules());
   log.push(seedSettings());
+  log.push(fillWebAppUrl_());
   log.push(protectLog());
   log.push(installTriggers());
   SpreadsheetApp.flush();
   var msg = log.join('\n');
-  try { SpreadsheetApp.getUi().alert('초기 설정 완료', msg + '\n\n다음 단계: 확장 프로그램 > Apps Script > 배포 > 새 배포(웹 앱)', SpreadsheetApp.getUi().ButtonSet.OK); } catch (e) {}
+  var next = getSetting('웹앱 URL')
+    ? '다음 단계: 메뉴 [고객관리] → 웹앱 열기'
+    : '다음 단계: 확장 프로그램 > Apps Script > 배포 > 새 배포(웹 앱)';
+  try { SpreadsheetApp.getUi().alert('초기 설정 완료', msg + '\n\n' + next, SpreadsheetApp.getUi().ButtonSet.OK); } catch (e) {}
   return msg;
+}
+
+/** 자동 설치로 배포된 웹앱 주소가 있으면 설정 탭에 채운다(비어 있을 때만). */
+function fillWebAppUrl_() {
+  var url = (typeof DEPLOYED_WEBAPP_URL === 'string') ? DEPLOYED_WEBAPP_URL : '';
+  if (!url || getSetting('웹앱 URL')) return '웹앱 URL: 변경 없음';
+  writeSetting('웹앱 URL', url);
+  return '웹앱 URL: 자동 입력됨';
 }
 
 /** 탭 생성 + 헤더(없는 컬럼은 뒤에 추가) + 틀 고정 */
