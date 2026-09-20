@@ -1,0 +1,321 @@
+/**
+ * 고객 챙기기 자동화 — Google Apps Script
+ * 시트 메뉴: [고객관리] 초기 설정 / 가짜 데이터 넣기 / 오늘 목록 미리보기 / 지금 메일 보내기
+ *
+ * 사용 순서
+ * 1) 이 파일 전체를 구글 시트의 확장 프로그램 > Apps Script 에 붙여넣기
+ * 2) 시트로 돌아오면 [고객관리] 메뉴가 생김 (없으면 새로고침)
+ * 3) [고객관리] > 초기 설정  → 시트 헤더 생성 + 매일 오전 8시 자동 발송 트리거 등록
+ * 4) [고객관리] > 가짜 데이터 넣기  → 검증용 가짜 고객 15명이 "고객DB" 시트에 채워짐
+ * 5) [고객관리] > 오늘 목록 미리보기  → 알림 대상 목록을 화면 팝업으로 확인
+ * 6) [고객관리] > 지금 메일 보내기  → 실제 메일 발송 테스트
+ */
+
+const SHEET_NAME = "고객DB";
+const LOG_SHEET_NAME = "발송로그";
+const HEADERS = [
+  "id", "이름", "전화번호",
+  "최근연락일", "견적발송일", "견적답변일",
+  "재구매예정일", "미수금액", "미수금기일",
+  "생일(MM-DD)", "기념일(MM-DD)",
+  "메모",
+];
+
+// ===== 메뉴 =====
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu("고객관리")
+    .addItem("① 초기 설정 (헤더 + 자동발송 트리거)", "setupSheet")
+    .addItem("② 가짜 데이터 넣기 (검증용 15명)", "insertFakeData")
+    .addItem("③ 오늘 목록 미리보기", "previewToday")
+    .addItem("④ 지금 메일 보내기", "sendTodayEmailManually")
+    .addToUi();
+}
+
+// ===== ① 초기 설정 =====
+function setupSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(SHEET_NAME);
+  if (!sheet) sheet = ss.insertSheet(SHEET_NAME);
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
+    sheet.setFrozenRows(1);
+  }
+
+  let logSheet = ss.getSheetByName(LOG_SHEET_NAME);
+  if (!logSheet) {
+    logSheet = ss.insertSheet(LOG_SHEET_NAME);
+    logSheet.getRange(1, 1, 1, 3).setValues([["발송일시", "발송대상수", "대상목록"]]);
+  }
+
+  // 기존 트리거 정리 후 매일 08:00 트리거 재등록 (중복 등록 방지)
+  ScriptApp.getProjectTriggers().forEach((t) => {
+    if (t.getHandlerFunction() === "sendTodayEmailTrigger") {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+  ScriptApp.newTrigger("sendTodayEmailTrigger")
+    .timeBased()
+    .everyDays(1)
+    .atHour(8)
+    .create();
+
+  SpreadsheetApp.getUi().alert(
+    "초기 설정 완료\n\n- '" + SHEET_NAME + "' 시트에 헤더가 준비됐습니다.\n" +
+    "- 매일 오전 8시에 자동으로 메일이 발송되도록 트리거가 등록됐습니다.\n" +
+    "- 받는 메일 주소는 스크립트 소유자(본인) 계정입니다.\n\n" +
+    "다음 단계: [고객관리] > 가짜 데이터 넣기"
+  );
+}
+
+// ===== ② 가짜 데이터 넣기 =====
+// Validation/fake_data.js 와 동일한 15명 데이터
+function getFakeCustomers_() {
+  return [
+    { id: 1, name: "김민준", phone: "010-1111-0001", lastContactDate: "2026-08-20", quoteSentDate: "", quoteRepliedDate: "", nextPurchaseDueDate: "", unpaidAmount: 0, paymentDueDate: "", birthday: "", anniversary: "", memo: "" },
+    { id: 2, name: "이서연", phone: "010-1111-0002", lastContactDate: "2026-09-10", quoteSentDate: "2026-09-08", quoteRepliedDate: "", nextPurchaseDueDate: "", unpaidAmount: 0, paymentDueDate: "", birthday: "", anniversary: "", memo: "" },
+    { id: 3, name: "박도현", phone: "010-1111-0003", lastContactDate: "2026-09-15", quoteSentDate: "", quoteRepliedDate: "", nextPurchaseDueDate: "2026-09-25", unpaidAmount: 0, paymentDueDate: "", birthday: "", anniversary: "", memo: "" },
+    { id: 4, name: "최지우", phone: "010-1111-0004", lastContactDate: "2026-09-12", quoteSentDate: "", quoteRepliedDate: "", nextPurchaseDueDate: "", unpaidAmount: 350000, paymentDueDate: "2026-09-05", birthday: "", anniversary: "", memo: "" },
+    { id: 5, name: "정하윤", phone: "010-1111-0005", lastContactDate: "2026-09-18", quoteSentDate: "", quoteRepliedDate: "", nextPurchaseDueDate: "", unpaidAmount: 0, paymentDueDate: "", birthday: "09-23", anniversary: "", memo: "" },
+    { id: 6, name: "한소율", phone: "010-1111-0006", lastContactDate: "2026-08-15", quoteSentDate: "", quoteRepliedDate: "", nextPurchaseDueDate: "", unpaidAmount: 120000, paymentDueDate: "2026-09-01", birthday: "", anniversary: "", memo: "중복 규칙 테스트용" },
+    { id: 7, name: "윤태오", phone: "010-1111-0007", lastContactDate: "2026-09-19", quoteSentDate: "2026-09-19", quoteRepliedDate: "2026-09-19", nextPurchaseDueDate: "2027-03-01", unpaidAmount: 0, paymentDueDate: "", birthday: "12-25", anniversary: "05-05", memo: "정상 대조군" },
+    { id: 8, name: "장예린", phone: "010-1111-0008", lastContactDate: "2026-09-17", quoteSentDate: "2026-09-05", quoteRepliedDate: "2026-09-06", nextPurchaseDueDate: "", unpaidAmount: 0, paymentDueDate: "", birthday: "", anniversary: "", memo: "오탐 방지 테스트용" },
+    { id: 9, name: "오준서", phone: "010-1111-0009", lastContactDate: "2026-09-16", quoteSentDate: "", quoteRepliedDate: "", nextPurchaseDueDate: "", unpaidAmount: 0, paymentDueDate: "", birthday: "", anniversary: "09-21", memo: "" },
+    { id: 10, name: "서지호", phone: "010-1111-0010", lastContactDate: "2026-09-14", quoteSentDate: "", quoteRepliedDate: "", nextPurchaseDueDate: "2026-11-01", unpaidAmount: 0, paymentDueDate: "", birthday: "", anniversary: "", memo: "오탐 방지 테스트용" },
+    { id: 11, name: "임수아", phone: "010-1111-0011", lastContactDate: "2026-09-19", quoteSentDate: "", quoteRepliedDate: "", nextPurchaseDueDate: "", unpaidAmount: 200000, paymentDueDate: "2026-09-30", birthday: "", anniversary: "", memo: "오탐 방지 테스트용" },
+    { id: 12, name: "강나연", phone: "010-1111-0012", lastContactDate: "2026-09-18", quoteSentDate: "2026-09-17", quoteRepliedDate: "", nextPurchaseDueDate: "", unpaidAmount: 0, paymentDueDate: "", birthday: "", anniversary: "", memo: "오탐 방지 테스트용" },
+    { id: 13, name: "권도윤", phone: "010-1111-0013", lastContactDate: "2026-09-11", quoteSentDate: "", quoteRepliedDate: "", nextPurchaseDueDate: "", unpaidAmount: 0, paymentDueDate: "", birthday: "12-01", anniversary: "", memo: "오탐 방지 테스트용" },
+    { id: 14, name: "배은우", phone: "010-1111-0014", lastContactDate: "2026-09-19", quoteSentDate: "", quoteRepliedDate: "", nextPurchaseDueDate: "2026-09-22", unpaidAmount: 0, paymentDueDate: "", birthday: "", anniversary: "09-20", memo: "중복 규칙 테스트용" },
+    { id: 15, name: "송지안", phone: "010-1111-0015", lastContactDate: "2026-08-30", quoteSentDate: "", quoteRepliedDate: "", nextPurchaseDueDate: "", unpaidAmount: 0, paymentDueDate: "", birthday: "", anniversary: "", memo: "21일 경계값 테스트용(정확히 21일=미해당)" },
+  ];
+}
+
+function insertFakeData() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(SHEET_NAME);
+  if (!sheet) {
+    setupSheet();
+    sheet = ss.getSheetByName(SHEET_NAME);
+  }
+  // 기존 데이터 지우고(헤더는 유지) 새로 채움
+  const lastRow = sheet.getLastRow();
+  if (lastRow > 1) {
+    sheet.getRange(2, 1, lastRow - 1, HEADERS.length).clearContent();
+  }
+  const data = getFakeCustomers_();
+  const rows = data.map((c) => [
+    c.id, c.name, c.phone,
+    c.lastContactDate, c.quoteSentDate, c.quoteRepliedDate,
+    c.nextPurchaseDueDate, c.unpaidAmount, c.paymentDueDate,
+    c.birthday, c.anniversary, c.memo,
+  ]);
+  sheet.getRange(2, 1, rows.length, HEADERS.length).setValues(rows);
+
+  SpreadsheetApp.getUi().alert(
+    "가짜 데이터 " + rows.length + "명을 '" + SHEET_NAME + "' 시트에 넣었습니다.\n" +
+    "회사 실제 고객 데이터가 아닌 테스트용 데이터입니다.\n\n" +
+    "다음 단계: [고객관리] > 오늘 목록 미리보기"
+  );
+}
+
+// ===== 판정 로직 (Validation/rules.js 와 동일) =====
+function parseDate_(dateStr) {
+  if (!dateStr) return null;
+  if (Object.prototype.toString.call(dateStr) === "[object Date]") {
+    const d = new Date(dateStr);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+  const parts = String(dateStr).split("-");
+  if (parts.length !== 3) return null;
+  const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function daysBetween_(dateVal, today) {
+  const d = parseDate_(dateVal);
+  if (!d) return null;
+  return Math.round((today.getTime() - d.getTime()) / 86400000);
+}
+
+function daysUntilAnnualDate_(mmdd, today) {
+  if (!mmdd) return null;
+  const parts = String(mmdd).split("-");
+  if (parts.length !== 2) return null;
+  const mm = Number(parts[0]);
+  const dd = Number(parts[1]);
+  let target = new Date(today.getFullYear(), mm - 1, dd);
+  const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  if (target < t0) target = new Date(today.getFullYear() + 1, mm - 1, dd);
+  return Math.round((target.getTime() - t0.getTime()) / 86400000);
+}
+
+const RULES_ = [
+  { key: "R1", label: "21일 넘게 연락 안 함", check: (c, today) => {
+      const d = daysBetween_(c.lastContactDate, today);
+      return d !== null && d > 21;
+  }},
+  { key: "R2", label: "견적 발송 후 7일 넘게 무응답", check: (c, today) => {
+      if (!c.quoteSentDate || c.quoteRepliedDate) return false;
+      const d = daysBetween_(c.quoteSentDate, today);
+      return d !== null && d > 7;
+  }},
+  { key: "R3", label: "재구매 시기 1주일 전", check: (c, today) => {
+      if (!c.nextPurchaseDueDate) return false;
+      const d = daysBetween_(c.nextPurchaseDueDate, today);
+      const daysLeft = -d;
+      return daysLeft >= 0 && daysLeft <= 7;
+  }},
+  { key: "R4", label: "미수금 기일 지남", check: (c, today) => {
+      if (!c.unpaidAmount || Number(c.unpaidAmount) <= 0 || !c.paymentDueDate) return false;
+      const d = daysBetween_(c.paymentDueDate, today);
+      return d !== null && d > 0;
+  }},
+  { key: "R5", label: "생일/기념일 3일 전", check: (c, today) => {
+      const b = daysUntilAnnualDate_(c.birthday, today);
+      const a = daysUntilAnnualDate_(c.anniversary, today);
+      const hitB = b !== null && b >= 0 && b <= 3;
+      const hitA = a !== null && a >= 0 && a <= 3;
+      return hitB || hitA;
+  }},
+];
+
+// 시트를 읽어서 오늘 챙길 고객 목록(고객당 1행, 사유 병합)을 반환
+function getTodayTargets_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_NAME);
+  if (!sheet) return [];
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  const values = sheet.getRange(2, 1, lastRow - 1, HEADERS.length).getValues();
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const targets = [];
+  values.forEach((row) => {
+    const c = {
+      id: row[0], name: row[1], phone: row[2],
+      lastContactDate: row[3], quoteSentDate: row[4], quoteRepliedDate: row[5],
+      nextPurchaseDueDate: row[6], unpaidAmount: row[7], paymentDueDate: row[8],
+      birthday: row[9], anniversary: row[10], memo: row[11],
+    };
+    if (!c.name) return;
+    const reasons = [];
+    RULES_.forEach((rule) => {
+      if (rule.check(c, today)) reasons.push(rule.label);
+    });
+    if (reasons.length > 0) {
+      targets.push({ name: c.name, phone: c.phone, reasons: reasons });
+    }
+  });
+  return targets;
+}
+
+// ===== ③ 미리보기 =====
+function previewToday() {
+  const targets = getTodayTargets_();
+  if (targets.length === 0) {
+    SpreadsheetApp.getUi().alert("오늘 챙길 고객이 없습니다.");
+    return;
+  }
+  let msg = "오늘(" + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd") + ") 챙길 고객 " + targets.length + "명\n\n";
+  targets.forEach((t, i) => {
+    msg += (i + 1) + ". " + t.name + " (" + t.phone + ")\n   → " + t.reasons.join(" + ") + "\n";
+  });
+  SpreadsheetApp.getUi().alert(msg);
+}
+
+// ===== ④ 메일 발송 =====
+function buildEmailBody_(targets) {
+  const dateStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+  let body = "오늘(" + dateStr + ") 챙겨야 할 고객 " + targets.length + "명입니다.\n\n";
+  targets.forEach((t, i) => {
+    body += (i + 1) + ". " + t.name + " (" + t.phone + ")\n   사유: " + t.reasons.join(" + ") + "\n\n";
+  });
+  body += "-- \n이 메일은 구글시트 자동화(고객관리)에서 매일 오전 8시에 자동 발송됩니다.";
+  return body;
+}
+
+// 발송로그 시트를 보고 "오늘 날짜"로 이미 발송한 기록이 있는지 확인
+function hasSentToday_(todayStr) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const logSheet = ss.getSheetByName(LOG_SHEET_NAME);
+  if (!logSheet) return false;
+  const lastRow = logSheet.getLastRow();
+  if (lastRow < 2) return false;
+  const dateValues = logSheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  const tz = Session.getScriptTimeZone();
+  return dateValues.some((row) => {
+    const d = row[0];
+    if (!d) return false;
+    return Utilities.formatDate(new Date(d), tz, "yyyy-MM-dd") === todayStr;
+  });
+}
+
+function sendTodayEmail_() {
+  const dateStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+
+  // 같은 날 두 번째 이상 호출이면 중복 발송하지 않고 여기서 끝냄
+  // (버튼을 여러 번 눌러도, 자동 트리거와 겹쳐도 하루 1회만 실제 메일이 나감)
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    if (hasSentToday_(dateStr)) {
+      return { sent: false, alreadySent: true, count: 0, message: "오늘(" + dateStr + ")은 이미 메일을 보냈습니다. 중복 발송하지 않았습니다." };
+    }
+
+    const targets = getTodayTargets_();
+    const recipient = Session.getActiveUser().getEmail();
+
+    if (targets.length === 0) {
+      return { sent: false, count: 0, message: "오늘은 챙길 고객이 없어 메일을 보내지 않았습니다." };
+    }
+
+    const subject = "[고객관리] " + dateStr + " 오늘 챙길 고객 " + targets.length + "명";
+    const body = buildEmailBody_(targets);
+    MailApp.sendEmail(recipient, subject, body);
+
+    // 발송로그 기록 (이 기록이 다음 호출에서 중복 방지 기준이 됨)
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const logSheet = ss.getSheetByName(LOG_SHEET_NAME);
+    if (logSheet) {
+      logSheet.appendRow([
+        new Date(),
+        targets.length,
+        targets.map((t) => t.name).join(", "),
+      ]);
+    }
+    return { sent: true, count: targets.length, message: recipient + " 로 메일을 보냈습니다." };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// 트리거(매일 08:00)에서 호출
+function sendTodayEmailTrigger() {
+  sendTodayEmail_();
+}
+
+// 메뉴 [지금 메일 보내기]에서 호출 (결과를 팝업으로 안내)
+function sendTodayEmailManually() {
+  const result = sendTodayEmail_();
+  SpreadsheetApp.getUi().alert(result.message);
+}
+
+// ===== 대시보드 웹앱 =====
+// 배포 > 웹앱으로 게시 후 발급되는 URL을 폰 홈 화면에 추가해서 사용
+function doGet() {
+  return HtmlService.createHtmlOutputFromFile("Dashboard")
+    .setTitle("오늘 챙길 고객")
+    .addMetaTag("viewport", "width=device-width, initial-scale=1");
+}
+
+// Dashboard.html 에서 google.script.run 으로 호출
+function getDashboardData() {
+  const targets = getTodayTargets_();
+  return {
+    dateStr: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd"),
+    targets: targets,
+  };
+}

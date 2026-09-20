@@ -54,9 +54,8 @@ function deliver_(texts, subject, settings) {
       if (!r.ok) { allOk = false; kakaoErr = r.error || ('HTTP ' + r.status); break; }
     }
     if (allOk) return { channel: 'kakao', ok: true };
-  } else {
-    kakaoErr = '카카오 미연결';
   }
+  // 카카오를 연결한 적이 없으면 이메일이 기본 채널이다(오류 아님) → 메일에 실패 문구를 붙이지 않는다.
   if (yn_(settings['이메일 폴백'] || 'Y')) {
     try {
       var to = Session.getEffectiveUser().getEmail();
@@ -64,7 +63,7 @@ function deliver_(texts, subject, settings) {
         body: texts.join('\n\n') + (webUrl ? '\n\n웹앱: ' + webUrl : '') + (kakaoErr ? '\n\n카카오 오류: ' + kakaoErr : '') });
       return { channel: 'email', ok: true, error: kakaoErr };
     } catch (e) {
-      return { channel: 'email', ok: false, error: kakaoErr + ' / 이메일 실패: ' + e.message };
+      return { channel: 'email', ok: false, error: (kakaoErr ? kakaoErr + ' / ' : '') + '이메일 실패: ' + e.message };
     }
   }
   return { channel: 'kakao', ok: false, error: kakaoErr };
