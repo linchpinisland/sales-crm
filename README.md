@@ -23,7 +23,7 @@ R10 | VIP 미접촉 | Y | 고객 | 마지막연락일 | 경과일이상 | 10 | �
 
 ## 설치 (비개발자, 15분)
 
-1. 템플릿 시트 **사본 만들기**
+1. **[템플릿 사본 만들기](https://docs.google.com/spreadsheets/d/1W9yToroXKZdTYdUYhm09E1MYHAN3OhAxxl_EGJKSESs/copy)** 링크 클릭 → 사본 만들기
 2. 메뉴 **[고객관리] → [① 초기 설정 실행]** (권한 승인)
 3. **확장 프로그램 → Apps Script → 배포 → 새 배포 → 웹 앱** (나 / 본인만) → URL을 설정 탭에
 4. 알림은 기본으로 **내 Gmail**에 옵니다. 카카오톡으로 받고 싶을 때만(선택) [docs/카카오연동.md](docs/카카오연동.md)
